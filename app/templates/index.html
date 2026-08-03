@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Market Basket Analyzer</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    <header class="navbar">
+        <div class="logo">🛒 AI Market Basket Analyzer</div>
+        <div class="search-container">
+            <input type="text" id="search-bar" placeholder="Search for products...">
+        </div>
+    </header>
+
+    <div class="layout-wrapper">
+        <main class="store-section">
+            <div class="loading" id="loading-message">Loading store catalog...</div>
+            <div class="product-grid" id="product-grid"></div>
+        </main>
+
+        <aside class="cart-section">
+            <div class="cart-container">
+                <h2>Your Cart</h2>
+                <ul id="cart-items">
+                    <li class="empty-cart">Cart is empty</li>
+                </ul>
+                <div class="cart-total">
+                    <strong>Total Items: </strong> <span id="cart-count">0</span>
+                </div>
+            </div>
+        </aside>
+    </div>
+
+    <script src="{{ url_for('static', filename='js/script.js') }}"></script>
+</body>
+</html>
