@@ -30,6 +30,20 @@ body {
     font-weight: bold;
 }
 
+.viewer-link {
+    color: #dbeafe;
+    font-weight: 600;
+    text-decoration: none;
+    margin-left: auto;
+    margin-right: 1.5rem;
+}
+
+.viewer-link:hover,
+.viewer-link:focus-visible {
+    color: white;
+    text-decoration: underline;
+}
+
 #search-bar {
     padding: 0.5rem 1rem;
     border: none;
@@ -321,4 +335,14 @@ main {
     margin-bottom: 0.5rem;
     border-radius: 5px;
     font-size: 0.9rem;
+}
+
+@media (max-width: 720px) {
+    .navbar { flex-wrap: wrap; gap: 0.75rem; padding: 1rem; }
+    .viewer-link { order: 3; margin: 0; }
+    .search-container { width: 100%; order: 4; }
+    #search-bar { width: 100%; }
+    .layout-wrapper { flex-direction: column; padding: 1rem; }
+    .store-section, .cart-section { width: 100%; }
+    .cart-section { position: static; }
 }

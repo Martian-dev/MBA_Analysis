@@ -12,3 +12,9 @@ __pycache__/
 # Raw datasets
 InstacartMBA/
 data/*.csv
+
+# Local pipeline state
+infra/volumes/
+data/raw/
+data/processed/
+data/checkpoints/

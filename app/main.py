@@ -1,8 +1,11 @@
-from flask import Flask, render_template, request, jsonify
+from flask import Flask, render_template, request, jsonify, Response, stream_with_context
 import pandas as pd
 import os
 import json
 import sys
+from redis import Redis
+from redis.exceptions import RedisError
+from pipeline.observability import ActivityLog
 
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
@@ -66,6 +69,51 @@ load_data()
 def home():
     """Serves the main HTML page."""
     return render_template('index.html')
+
+
+@app.route('/viewer')
+def viewer():
+    """Live view of the Kafka consumer's Redis activity log."""
+    return render_template('viewer.html')
+
+
+def activity_log():
+    return ActivityLog(Redis.from_url(os.getenv('REDIS_URL', 'redis://localhost:6379/0'), decode_responses=True))
+
+
+@app.route('/api/activity')
+def activity_snapshot():
+    try:
+        return jsonify(activity_log().snapshot())
+    except RedisError:
+        return jsonify({'error': 'Redis is unavailable. Start the live stack.'}), 503
+
+
+@app.route('/api/activity/stream')
+def activity_stream():
+    """Server-sent events; the cursor is supplied by the initial snapshot."""
+    # EventSource sends Last-Event-ID after a disconnect. Prefer it so a
+    # reconnect resumes from the last delivered event instead of replaying the
+    # initial snapshot cursor.
+    cursor = request.headers.get('Last-Event-ID') or request.args.get('since', '0-0')
+    if not __import__('re').fullmatch(r'\d+-\d+', cursor):
+        return jsonify({'error': 'Invalid stream cursor'}), 400
+    try:
+        log = activity_log()
+        log.client.ping()
+    except RedisError:
+        return jsonify({'error': 'Redis is unavailable. Start the live stack.'}), 503
+
+    def generate():
+        try:
+            for item in log.follow(cursor):
+                yield f"id: {item['id']}\ndata: {json.dumps(item)}\n\n"
+        except RedisError:
+            yield 'event: disconnect\ndata: {"error":"Redis connection lost"}\n\n'
+
+    return Response(stream_with_context(generate()), mimetype='text/event-stream', headers={
+        'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no',
+    })
 
 
 # ==========================================
