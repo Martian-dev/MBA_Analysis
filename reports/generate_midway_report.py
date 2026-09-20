@@ -280,7 +280,7 @@ def pdf_report(ctx: dict[str, object]) -> None:
     story += [P("1. Application of Big Data Analytics Concepts", "H1x"), P("The implemented first vertical slice applies distributed-system concepts at the boundaries where they matter: Kafka provides an ordered event log, Redis provides low-latency rule and observation lookups, and a stateful policy consumes the stream by shopper/session. The current Python engine is intentionally a reference implementation for the future Spark Structured Streaming job.")]
     story.append(RLImage(str(DIAGRAM_PATH), width=178 * mm, height=83 * mm))
     story += [P("Decision rule demonstrated", "H2x"), P("For each session, the engine tracks cart state and product views. It issues a 5% coupon only when dwell_seconds >= 45, the viewed product is not already in the cart, a directed cart-item -> viewed-product rule has lift >= 1.5, and that shopper/product has not already received an offer. The strongest qualifying cart item is selected.")]
-    code = """dwell = float(event[\"dwell_seconds\"])\nif dwell < self.dwell_threshold_seconds:\n    return None, \"below_dwell_threshold\"\nif product in state.cart:\n    return None, \"product_in_cart\"\nfor cart_item in state.cart:\n    metrics = self.rules.lookup(cart_item, product)\n    if metrics and float(metrics[\"lift\"]) >= self.min_lift:\n        best = max(best, (float(metrics[\"lift\"]), cart_item, metrics))"""
+    code = """best = None\nfor cart_item in state.cart:\n    metrics = self.rules.lookup(cart_item, product)\n    if not metrics or float(metrics[\"lift\"]) < self.min_lift:\n        continue\n    candidate = (float(metrics[\"lift\"]), cart_item, metrics)\n    if best is None or candidate[0] > best[0]:\n        best = candidate"""
     story += [P("Code excerpt: stateful hesitation policy", "H2x"), P(code.replace("\n", "<br/>"), "CodeX"), P("Streaming contract", "H2x"), P("Events are JSON objects with event_id, event_type, event_time, user_id, session_id, and product_id. View-ended events add dwell_seconds; cart events add quantity. The Kafka events topic is partitioned by user_id so state mutations for one shopper remain ordered. Coupon output includes support, confidence, lift, discount, and the supporting cart item.")]
     story.append(PageBreak())
 
@@ -314,12 +314,12 @@ def pdf_report(ctx: dict[str, object]) -> None:
     story += [P("3. Methods, Tools, and APIs", "H1x"), P("The stack is intentionally staged. The implemented components prove the event and serving contracts before the heavier HDFS/Spark deployment is introduced. This avoids building a distributed job around an untested rule schema.")]
     tools = [
         [P("Tool / API", "Smallx"), P("Role now", "Smallx"), P("Why appropriate / next use", "Smallx")],
-        [P("Apache Kafka 4.0.2 (KRaft)", "Smallx"), P("clickstream.events and coupon.issued topics", "Smallx"), P("Durable, partitioned event log; KRaft removes ZooKeeper dependency. The same contract will feed Spark Structured Streaming." )],
-        [P("Redis 7.4", "Smallx"), P("rule snapshot + bounded activity stream + counters", "Smallx"), P("Fast hash lookups suit a hot rule cache and low-latency observability. Future snapshots should be versioned and published by Spark." )],
+        [P("Kafka 4.0.2 + kafka-python", "Smallx"), P("KRaft broker; producer, consumer, and topic-admin clients", "Smallx"), P("Durable, partitioned event log without ZooKeeper. The same contract will feed Spark Structured Streaming." )],
+        [P("Redis 7.4 + redis-py", "Smallx"), P("rule snapshot + bounded activity stream + counters", "Smallx"), P("Fast hash lookups suit a hot rule cache and low-latency observability. Future snapshots should be versioned and published by Spark." )],
         [P("Python reference engine", "Smallx"), P("session state, cart logic, dwell/lift policy", "Smallx"), P("Small, testable behavioral oracle for the future distributed stream job; not presented as Spark execution." )],
         [P("Flask + SSE", "Smallx"), P("/viewer, /api/activity, /api/activity/stream", "Smallx"), P("Minimal operations surface that renders live decisions without polling; supports Last-Event-ID reconnects." )],
         [P("Docker Compose", "Smallx"), P("local Kafka and Redis orchestration", "Smallx"), P("Reproducible isolated course demonstration; later extend with Spark/HDFS containers or a cluster profile." )],
-        [P("Pandas / mlxtend / scikit-learn", "Smallx"), P("legacy notebook and provisional CSV artifact", "Smallx"), P("Useful for EDA/prototyping, but the current flattened rule export is not final evidence. Replace with Spark MLlib FP-Growth." )],
+        [P("Pandas / mlxtend / scikit-learn / NLTK", "Smallx"), P("legacy EDA, FP-Growth prototype, and product-name normalization", "Smallx"), P("Useful for exploration, but the flattened rule export is not final evidence. Replace rule mining with Spark MLlib FP-Growth." )],
         [P("uv + pytest", "Smallx"), P("dependency lock and 7 automated tests", "Smallx"), P("Fast reproducible setup and regression safety around event contracts and coupon policy." )],
     ]
     story.append(table(tools, widths=[39 * mm, 58 * mm, 81 * mm], font_size=7.15))
@@ -331,10 +331,10 @@ def pdf_report(ctx: dict[str, object]) -> None:
     # Page 5: team participation.
     story += [P("4. Team Participation and Equal Work Distribution", "H1x"), P("The team is distributing the project as three equal ownership tracks. Each member owns one third of the delivery surface, with explicit handoffs at the versioned rule snapshot, event contract, and acceptance tests. The split below is an equal-weight plan for the delivered vertical slice and its immediate continuation; it does not imply that the unbuilt Spark stages are already complete.")]
     team = [
-        [P("Member", "Smallx"), P("Equal share", "Smallx"), P("Ownership and contribution", "Smallx"), P("Handoff / acceptance", "Smallx")],
-        [P("Vaibhav P", "Smallx"), P("33.33% (1/3)", "Smallx"), P("Platform and integration: Docker Compose, Kafka topics, Redis rule loading, event contract, consumer orchestration, Flask routes, SSE plumbing, run scripts, branch/PR integration.", "Smallx"), P("Kafka/Redis services start; event schema is validated; viewer and scripts are reachable.", "Smallx")],
-        [P("Antony Johnson", "Smallx"), P("33.33% (1/3)", "Smallx"), P("Historical intelligence: Instacart data interpretation, support/confidence/lift semantics, provisional-rule audit, Spark FP-Growth migration design, HDFS/Parquet landing and rule-quality plan.", "Smallx"), P("One-item directional rule schema is documented; Spark output will be validated before Redis publication.", "Smallx")],
-        [P("Harish M", "Smallx"), P("33.33% (1/3)", "Smallx"), P("Activation and quality: randomized simulator, scenario coverage, stateful coupon policy, Redis observability stream, Signal Room UI, policy tests, runtime demonstration and documentation.", "Smallx"), P("Eligible and suppression branches are visible; tests assert thresholds, guards, idempotency, and random products.", "Smallx")],
+        [P("Member", "Smallx"), P("Equal share", "Smallx"), P("Completed contribution", "Smallx"), P("Next-stage ownership / acceptance", "Smallx")],
+        [P("Vaibhav P", "Smallx"), P("33.33% (1/3)", "Smallx"), P("Platform integration: Docker Compose, Kafka topics, Redis rule loader, event contract, consumer orchestration, Flask/SSE routes, run scripts, and branch/PR packaging.", "Smallx"), P("Own distributed integration and deployment: services start reproducibly, schemas validate, checkpoints and APIs remain compatible.", "Smallx")],
+        [P("Antony Johnson", "Smallx"), P("33.33% (1/3)", "Smallx"), P("Historical analytics: Instacart dataset collection, initial EDA/preprocessing notebook, NLTK product normalization, FP-Growth prototype, rule metrics, and provisional artifact audit.", "Smallx"), P("Own HDFS/Parquet landing and Spark MLlib mining: publish validated one-item directional rules with lineage and run metrics.", "Smallx")],
+        [P("Harish M", "Smallx"), P("33.33% (1/3)", "Smallx"), P("Live activation and quality: randomized simulator, scenario coverage, stateful coupon policy, Redis activity stream, Signal Room UI, automated tests, and demo documentation.", "Smallx"), P("Own streaming evaluation: both policy branches stay visible; measure latency/throughput and document coupon guardrails.", "Smallx")],
     ]
     story.append(table(team, widths=[28 * mm, 29 * mm, 76 * mm, 45 * mm], font_size=7.1))
     story += [Spacer(1, 8 * mm), P("Collaboration flow", "H2x")]
@@ -486,7 +486,7 @@ def docx_report(ctx: dict[str, object]) -> None:
     heading("Decision rule demonstrated", 2)
     para("For each session, the engine tracks cart state and product views. It issues a 5% coupon only when dwell_seconds >= 45, the viewed product is not already in the cart, a directed cart-item -> viewed-product rule has lift >= 1.5, and that shopper/product has not already received an offer. The strongest qualifying cart item is selected.")
     heading("Code excerpt: stateful hesitation policy", 2)
-    code('dwell = float(event["dwell_seconds"])\nif dwell < self.dwell_threshold_seconds:\n    return None, "below_dwell_threshold"\nif product in state.cart:\n    return None, "product_in_cart"\nfor cart_item in state.cart:\n    metrics = self.rules.lookup(cart_item, product)\n    if metrics and float(metrics["lift"]) >= self.min_lift:\n        best = max(best, (float(metrics["lift"]), cart_item, metrics))')
+    code('best = None\nfor cart_item in state.cart:\n    metrics = self.rules.lookup(cart_item, product)\n    if not metrics or float(metrics["lift"]) < self.min_lift:\n        continue\n    candidate = (float(metrics["lift"]), cart_item, metrics)\n    if best is None or candidate[0] > best[0]:\n        best = candidate')
     heading("Streaming contract", 2)
     para("Events are JSON objects with event_id, event_type, event_time, user_id, session_id, and product_id. View-ended events add dwell_seconds; cart events add quantity. The Kafka events topic is partitioned by user_id so state mutations for one shopper remain ordered. Coupon output includes support, confidence, lift, discount, and the supporting cart item.")
     page_break()
@@ -517,12 +517,12 @@ def docx_report(ctx: dict[str, object]) -> None:
     heading("3. Methods, Tools, and APIs")
     para("The stack is intentionally staged. The implemented components prove the event and serving contracts before the heavier HDFS/Spark deployment is introduced. This avoids building a distributed job around an untested rule schema.")
     add_table(["Tool / API", "Role now", "Why appropriate / next use"], [
-        ("Apache Kafka 4.0.2 (KRaft)", "clickstream.events and coupon.issued topics", "Durable, partitioned event log; KRaft removes ZooKeeper dependency. The same contract will feed Spark Structured Streaming."),
-        ("Redis 7.4", "rule snapshot + bounded activity stream + counters", "Fast hash lookups suit a hot rule cache and low-latency observability. Future snapshots should be versioned and published by Spark."),
+        ("Kafka 4.0.2 + kafka-python", "KRaft broker; producer, consumer, and topic-admin clients", "Durable, partitioned event log without ZooKeeper. The same contract will feed Spark Structured Streaming."),
+        ("Redis 7.4 + redis-py", "rule snapshot + bounded activity stream + counters", "Fast hash lookups suit a hot rule cache and low-latency observability. Future snapshots should be versioned and published by Spark."),
         ("Python reference engine", "session state, cart logic, dwell/lift policy", "Small, testable behavioral oracle for the future distributed stream job; not presented as Spark execution."),
         ("Flask + SSE", "/viewer, /api/activity, /api/activity/stream", "Minimal operations surface that renders live decisions without polling; supports Last-Event-ID reconnects."),
         ("Docker Compose", "local Kafka and Redis orchestration", "Reproducible isolated course demonstration; later extend with Spark/HDFS containers or a cluster profile."),
-        ("Pandas / mlxtend / scikit-learn", "legacy notebook and provisional CSV artifact", "Useful for EDA/prototyping, but the current flattened rule export is not final evidence. Replace with Spark MLlib FP-Growth."),
+        ("Pandas / mlxtend / scikit-learn / NLTK", "legacy EDA, FP-Growth prototype, and product-name normalization", "Useful for exploration, but the flattened rule export is not final evidence. Replace rule mining with Spark MLlib FP-Growth."),
         ("uv + pytest", "dependency lock and 7 automated tests", "Fast reproducible setup and regression safety around event contracts and coupon policy."),
     ])
     heading("Randomization and replay", 2)
@@ -535,10 +535,10 @@ def docx_report(ctx: dict[str, object]) -> None:
     # Page 5.
     heading("4. Team Participation and Equal Work Distribution")
     para("The team is distributing the project as three equal ownership tracks. Each member owns one third of the delivery surface, with explicit handoffs at the versioned rule snapshot, event contract, and acceptance tests. The split below is an equal-weight plan for the delivered vertical slice and its immediate continuation; it does not imply that the unbuilt Spark stages are already complete.")
-    add_table(["Member", "Equal share", "Ownership and contribution", "Handoff / acceptance"], [
-        ("Vaibhav P", "33.33% (1/3)", "Platform and integration: Docker Compose, Kafka topics, Redis rule loading, event contract, consumer orchestration, Flask routes, SSE plumbing, run scripts, branch/PR integration.", "Kafka/Redis start; schema validates; viewer and scripts are reachable."),
-        ("Antony Johnson", "33.33% (1/3)", "Historical intelligence: Instacart interpretation, support/confidence/lift semantics, provisional-rule audit, Spark FP-Growth migration design, HDFS/Parquet landing and rule-quality plan.", "One-item directional rule schema is documented; Spark output is validated before Redis publication."),
-        ("Harish M", "33.33% (1/3)", "Activation and quality: randomized simulator, scenario coverage, stateful coupon policy, Redis observability stream, Signal Room UI, policy tests, runtime demonstration and documentation.", "Eligible and suppression branches are visible; tests assert thresholds, guards, idempotency, and random products."),
+    add_table(["Member", "Equal share", "Completed contribution", "Next-stage ownership / acceptance"], [
+        ("Vaibhav P", "33.33% (1/3)", "Platform integration: Docker Compose, Kafka topics, Redis rule loader, event contract, consumer orchestration, Flask/SSE routes, run scripts, and branch/PR packaging.", "Own distributed integration and deployment: services start reproducibly, schemas validate, checkpoints and APIs remain compatible."),
+        ("Antony Johnson", "33.33% (1/3)", "Historical analytics: Instacart dataset collection, initial EDA/preprocessing notebook, NLTK product normalization, FP-Growth prototype, rule metrics, and provisional artifact audit.", "Own HDFS/Parquet landing and Spark MLlib mining: publish validated one-item directional rules with lineage and run metrics."),
+        ("Harish M", "33.33% (1/3)", "Live activation and quality: randomized simulator, scenario coverage, stateful coupon policy, Redis activity stream, Signal Room UI, automated tests, and demo documentation.", "Own streaming evaluation: both policy branches stay visible; measure latency/throughput and document coupon guardrails."),
     ])
     heading("Collaboration flow", 2)
     add_table(["Historical track", "Shared seam", "Platform track", "Shared seam", "Activation track"], [
