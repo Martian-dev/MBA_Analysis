@@ -4,6 +4,7 @@ This repository is evolving from a Flask market-basket demo into a hybrid batch 
 
 ## What to run
 
+- `./start.sh` — one-shot launcher: verifies dependencies, starts Kafka/Redis, resets ephemeral demo state, loads the MBA rule artifact, starts the randomized clickstream, consumer, and viewer.
 - `bash scripts/run_live.sh` — recommended: continuous simulated clickstream plus the live Signal Room at `/viewer`.
 - `bash scripts/run_demo.sh` — finite three-event terminal demonstration; exits on its own.
 - `uv run flask --app app.main run` — storefront and viewer only; live infrastructure must already be running for viewer data.
@@ -11,6 +12,16 @@ This repository is evolving from a Flask market-basket demo into a hybrid batch 
 ## Run the first vertical slice
 
 Prerequisites: Docker Compose and `uv`.
+
+For a fresh end-to-end run, use the root launcher:
+
+```bash
+./start.sh
+```
+
+Then open <http://127.0.0.1:5000/viewer>. The launcher continuously samples real products and qualifying association pairs from `app/rules.csv`, so the stream produces a mix of coupon decisions and suppressed decisions instead of replaying a fixed scenario. It clears only the demo's Kafka topics and Redis activity counters on startup; the rule artifact and source data are untouched. Press `Ctrl-C` to stop the application and local infrastructure. Set `KEEP_INFRA=1` to leave Kafka and Redis running, or `SIMULATOR_INTERVAL=1` to increase the event rate.
+
+Runtime logs are retained under `.runtime/live/` for troubleshooting.
 
 For the shortest demonstration, run:
 
