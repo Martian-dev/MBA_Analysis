@@ -24,12 +24,14 @@ cleanup() {
     "${compose[@]}" down >/dev/null 2>&1
   fi
 }
-trap cleanup EXIT INT TERM
-
 if (echo >/dev/tcp/127.0.0.1/5000) 2>/dev/null; then
   echo "Port 5000 is already in use. Stop the existing viewer before starting a fresh demo." >&2
   exit 1
 fi
+
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 echo "Starting Kafka and Redis..."
 "${compose[@]}" up -d >/dev/null
