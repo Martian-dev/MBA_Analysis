@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
 
@@ -25,10 +26,24 @@ class ActivityLog:
         event_id = results[0]
         return event_id.decode() if isinstance(event_id, bytes) else event_id
 
-    def snapshot(self, limit: int = 60) -> dict[str, Any]:
-        rows = self.client.xrevrange(STREAM_KEY, count=limit)
+    def snapshot(
+        self,
+        limit: int = 60,
+        user_id: str | None = None,
+        session_id: str | None = None,
+    ) -> dict[str, Any]:
+        scoped = user_id is not None or session_id is not None
+        rows = self.client.xrevrange(STREAM_KEY, count=MAX_EVENTS if scoped else limit)
         events = [self._decode(row) for row in reversed(rows)]
-        counts = {key: int(value) for key, value in self.client.hgetall(COUNTS_KEY).items()}
+        if scoped:
+            events = [
+                event for event in events
+                if event["payload"].get("user_id") == user_id
+                and event["payload"].get("session_id") == session_id
+            ][-limit:]
+            counts = dict(Counter(event["kind"] for event in events))
+        else:
+            counts = {key: int(value) for key, value in self.client.hgetall(COUNTS_KEY).items()}
         return {"events": events, "counts": counts, "last_id": events[-1]["id"] if events else "0-0"}
 
     @staticmethod

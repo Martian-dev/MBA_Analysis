@@ -46,7 +46,13 @@ class SimulationCatalog:
     product_weights: list[float]
 
     @classmethod
-    def from_csv(cls, path: str | os.PathLike[str], min_lift: float = 1.5) -> "SimulationCatalog":
+    def from_csv(
+        cls,
+        path: str | os.PathLike[str],
+        min_lift: float = 1.5,
+        min_confidence: float = 0.10,
+        min_support: float = 0.012,
+    ) -> "SimulationCatalog":
         strongest: dict[tuple[str, str], dict[str, float]] = {}
         products: set[str] = set()
         with Path(path).open(newline="", encoding="utf-8") as handle:
@@ -54,8 +60,17 @@ class SimulationCatalog:
                 antecedent = row["antecedents"].strip()
                 consequent = row["consequents"].strip()
                 products.update((antecedent, consequent))
-                metrics = {"support": float(row["support"]), "lift": float(row["lift"])}
-                if antecedent == consequent or metrics["lift"] < min_lift:
+                metrics = {
+                    "support": float(row["support"]),
+                    "confidence": float(row["confidence"]),
+                    "lift": float(row["lift"]),
+                }
+                if (
+                    antecedent == consequent
+                    or metrics["lift"] < min_lift
+                    or metrics["confidence"] < min_confidence
+                    or metrics["support"] < min_support
+                ):
                     continue
                 pair = (antecedent, consequent)
                 if pair not in strongest or metrics["lift"] > strongest[pair]["lift"]:
@@ -167,13 +182,15 @@ def main() -> None:
     parser.add_argument("--bootstrap-servers", default=os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"))
     parser.add_argument("--rules", default=os.getenv("RULES_PATH", "app/rules.csv"))
     parser.add_argument("--min-lift", type=float, default=float(os.getenv("MIN_LIFT", "1.5")))
+    parser.add_argument("--min-confidence", type=float, default=float(os.getenv("MIN_CONFIDENCE", "0.10")))
+    parser.add_argument("--min-support", type=float, default=float(os.getenv("MIN_SUPPORT", "0.012")))
     parser.add_argument("--interval", type=float, default=2.0, help="seconds between sessions")
     parser.add_argument("--sessions", type=int, default=0, help="0 means run continuously")
     parser.add_argument("--seed", type=int, default=None, help="optional seed for reproducible replay")
     args = parser.parse_args()
     if args.interval < 1:
         parser.error("--interval must be at least 1 second")
-    catalog = SimulationCatalog.from_csv(args.rules, args.min_lift)
+    catalog = SimulationCatalog.from_csv(args.rules, args.min_lift, args.min_confidence, args.min_support)
     rng = random.Random(args.seed)
     producer = KafkaProducer(bootstrap_servers=args.bootstrap_servers, value_serializer=JsonSerializer())
     try:

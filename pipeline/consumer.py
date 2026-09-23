@@ -31,6 +31,8 @@ def main() -> None:
         RedisRuleLookup(redis_client),
         dwell_threshold_seconds=float(os.getenv("DWELL_THRESHOLD_SECONDS", "45")),
         min_lift=float(os.getenv("MIN_LIFT", "1.5")),
+        min_confidence=float(os.getenv("MIN_CONFIDENCE", "0.10")),
+        min_support=float(os.getenv("MIN_SUPPORT", "0.012")),
         discount_percent=int(os.getenv("DISCOUNT_PERCENT", "5")),
     )
     consumer = KafkaConsumer(

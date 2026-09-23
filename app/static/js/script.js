@@ -7,6 +7,24 @@ document.addEventListener('DOMContentLoaded', () => {
     let latestOffer = null;
     let activitySource = null;
 
+    function sessionValue(key, prefix) {
+        try {
+            let value = sessionStorage.getItem(key);
+            if (!value) {
+                value = `${prefix}-${crypto.randomUUID ? crypto.randomUUID().slice(0, 8) : Math.random().toString(16).slice(2, 10)}`;
+                sessionStorage.setItem(key, value);
+            }
+            return value;
+        } catch (_) {
+            return `${prefix}-local`;
+        }
+    }
+
+    const shopperSession = {
+        userId: sessionValue('basket-signal-user', 'browser-shopper'),
+        sessionId: sessionValue('basket-signal-session', 'store-session'),
+    };
+
     const gridContainer = document.querySelector('#product-grid');
     const searchBar = document.querySelector('#search-bar');
     const cartItemsContainer = document.querySelector('#cart-items');
@@ -15,6 +33,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const liveOfferContainer = document.querySelector('#live-offer');
     const decisionState = document.querySelector('#decision-state');
     const storeStatus = document.querySelector('#store-status');
+    document.querySelector('#session-label').textContent = `${shopperSession.userId} · this browser`;
 
     const text = value => String(value ?? '');
     const escapeHtml = value => text(value).replace(/[&<>'"]/g, character => ({
@@ -46,6 +65,29 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function offerFor(productName) {
         return liveOffers[productName] || null;
+    }
+
+    function newEventId() {
+        return crypto.randomUUID ? crypto.randomUUID() : `event-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+    }
+
+    async function publishEvent(eventType, productName, extra = {}) {
+        const payload = {
+            event_id: newEventId(),
+            event_type: eventType,
+            event_time: new Date().toISOString(),
+            user_id: shopperSession.userId,
+            session_id: shopperSession.sessionId,
+            product_id: productName,
+            ...extra,
+        };
+        const response = await fetch('/api/events', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload),
+        });
+        if (!response.ok) throw new Error('Could not publish the shopper event');
+        return payload;
     }
 
     function renderProducts(productsToRender) {
@@ -109,6 +151,12 @@ document.addEventListener('DOMContentLoaded', () => {
             delete cart[productName];
             delete appliedCoupons[productName];
         }
+        try {
+            await publishEvent(change > 0 ? 'cart_item_added' : 'cart_item_removed', productName);
+            setStoreStatus('live', 'Personalization online');
+        } catch (_) {
+            setStoreStatus('down', 'Event stream unavailable');
+        }
         updateActionUI(productName);
         updateCartSidebar();
         if (change > 0 && canTriggerSubRow) await triggerSubRow(productName);
@@ -163,6 +211,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 <div style="font-size: .78rem; font-weight: 700;">${escapeHtml(item)}</div>
                 <div style="font: 500 10px var(--mono);">${money(demoPrice(item))}</div>
                 <div style="width: 100%;" data-action-item="${escapeHtml(item)}"></div>
+                <button class="hesitate-btn" type="button" data-hesitate-product="${escapeHtml(item)}">Test 55s hesitation</button>
             </div>`).join('');
         subRow.innerHTML = `<h4>Because you added ${escapeHtml(productName)}…</h4><div class="sub-row-items">${miniCards}</div>`;
 
@@ -177,6 +226,25 @@ document.addEventListener('DOMContentLoaded', () => {
         }
         lastCardInRow.insertAdjacentElement('afterend', subRow);
         data.recommendations.forEach(updateActionUI);
+        subRow.querySelectorAll('[data-hesitate-product]').forEach(button => {
+            button.addEventListener('click', () => simulateHesitation(button.dataset.hesitateProduct, button));
+        });
+    }
+
+    async function simulateHesitation(productName, button) {
+        button.disabled = true;
+        button.textContent = 'Sending hesitation…';
+        const startedAt = new Date(Date.now() - 55_000).toISOString();
+        try {
+            await publishEvent('product_view_started', productName, {event_time: startedAt});
+            await publishEvent('product_view_ended', productName, {dwell_seconds: 55});
+            decisionState.textContent = 'Evaluating';
+            button.textContent = 'Decision sent';
+        } catch (_) {
+            setStoreStatus('down', 'Event stream unavailable');
+            button.disabled = false;
+            button.textContent = 'Retry 55s hesitation';
+        }
     }
 
     async function fetchCartRecommendations() {
@@ -242,14 +310,17 @@ document.addEventListener('DOMContentLoaded', () => {
         const product = latestOffer.product_id;
         cart[product] = (cart[product] || 0) + 1;
         appliedCoupons[product] = latestOffer;
+        publishEvent('cart_item_added', product).catch(() => setStoreStatus('down', 'Event stream unavailable'));
         renderProducts(visibleProducts);
         updateCartSidebar();
     }
 
     function receiveActivity(entry) {
+        const payload = entry.payload || {};
+        if (payload.user_id !== shopperSession.userId || payload.session_id !== shopperSession.sessionId) return;
         if (entry.kind === 'coupon_issued') {
-            latestOffer = entry.payload;
-            liveOffers[entry.payload.product_id] = entry.payload;
+            latestOffer = payload;
+            liveOffers[payload.product_id] = payload;
             renderProducts(visibleProducts);
             renderLiveOffer();
         } else if (entry.kind === 'coupon_suppressed' && !latestOffer) {
@@ -259,7 +330,12 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function connectActivity(cursor) {
         if (activitySource) activitySource.close();
-        activitySource = new EventSource(`/api/activity/stream?since=${encodeURIComponent(cursor)}`);
+        const params = new URLSearchParams({
+            since: cursor,
+            user_id: shopperSession.userId,
+            session_id: shopperSession.sessionId,
+        });
+        activitySource = new EventSource(`/api/activity/stream?${params.toString()}`);
         activitySource.onopen = () => setStoreStatus('live', 'Personalization online');
         activitySource.onmessage = event => receiveActivity(JSON.parse(event.data));
         activitySource.onerror = () => setStoreStatus('down', 'Reconnecting to stream');
@@ -267,7 +343,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
     async function connectToPipeline() {
         try {
-            const response = await fetch('/api/activity');
+            const params = new URLSearchParams({
+                user_id: shopperSession.userId,
+                session_id: shopperSession.sessionId,
+            });
+            const response = await fetch(`/api/activity?${params.toString()}`);
             if (!response.ok) throw new Error('Pipeline unavailable');
             const data = await response.json();
             data.events.forEach(receiveActivity);

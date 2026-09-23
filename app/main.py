@@ -5,7 +5,12 @@ import json
 import sys
 from redis import Redis
 from redis.exceptions import RedisError
+from kafka import KafkaProducer
+from kafka.errors import KafkaError
+from pipeline.contracts import validate_event
 from pipeline.observability import ActivityLog
+from pipeline.serialization import JsonSerializer
+from pipeline.topics import EVENTS_TOPIC
 
 if hasattr(sys.stdout, 'reconfigure'):
     sys.stdout.reconfigure(encoding='utf-8')
@@ -23,6 +28,7 @@ MAPPING_PATH = os.path.join(BASE_DIR, 'group_mapping.json')
 rules_df = None
 store_products = []
 item_to_rep_map = {}
+_event_producer = None
 
 def load_data():
     global rules_df, store_products, item_to_rep_map
@@ -81,12 +87,47 @@ def activity_log():
     return ActivityLog(Redis.from_url(os.getenv('REDIS_URL', 'redis://localhost:6379/0'), decode_responses=True))
 
 
+def event_producer():
+    """Lazily create the browser-to-Kafka producer used by the storefront demo."""
+    global _event_producer
+    if _event_producer is None:
+        _event_producer = KafkaProducer(
+            bootstrap_servers=os.getenv('KAFKA_BOOTSTRAP_SERVERS', 'localhost:9092'),
+            value_serializer=JsonSerializer(),
+        )
+    return _event_producer
+
+
 @app.route('/api/activity')
 def activity_snapshot():
+    user_id = request.args.get('user_id')
+    session_id = request.args.get('session_id')
+    if (user_id is None) != (session_id is None):
+        return jsonify({'error': 'user_id and session_id must be supplied together'}), 400
     try:
-        return jsonify(activity_log().snapshot())
+        return jsonify(activity_log().snapshot(user_id=user_id, session_id=session_id))
     except RedisError:
         return jsonify({'error': 'Redis is unavailable. Start the live stack.'}), 503
+
+
+@app.route('/api/events', methods=['POST'])
+def publish_storefront_event():
+    """Publish one validated browser event into the same keyed Kafka stream."""
+    payload = request.get_json(silent=True)
+    try:
+        event = validate_event(payload)
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 400
+
+    try:
+        event_producer().send(
+            EVENTS_TOPIC,
+            key=event['user_id'].encode('utf-8'),
+            value=event,
+        ).get(timeout=10)
+    except KafkaError:
+        return jsonify({'error': 'Kafka is unavailable. Start the live stack.'}), 503
+    return jsonify({'status': 'accepted', 'event_id': event['event_id']}), 202
 
 
 @app.route('/api/activity/stream')
@@ -98,6 +139,10 @@ def activity_stream():
     cursor = request.headers.get('Last-Event-ID') or request.args.get('since', '0-0')
     if not __import__('re').fullmatch(r'\d+-\d+', cursor):
         return jsonify({'error': 'Invalid stream cursor'}), 400
+    user_id = request.args.get('user_id')
+    session_id = request.args.get('session_id')
+    if (user_id is None) != (session_id is None):
+        return jsonify({'error': 'user_id and session_id must be supplied together'}), 400
     try:
         log = activity_log()
         log.client.ping()
@@ -107,6 +152,11 @@ def activity_stream():
     def generate():
         try:
             for item in log.follow(cursor):
+                if user_id is not None and (
+                    item['payload'].get('user_id') != user_id
+                    or item['payload'].get('session_id') != session_id
+                ):
+                    continue
                 yield f"id: {item['id']}\ndata: {json.dumps(item)}\n\n"
         except RedisError:
             yield 'event: disconnect\ndata: {"error":"Redis connection lost"}\n\n'

@@ -68,12 +68,14 @@ The demo defaults are deliberately explicit and configurable:
 
 - Dwell threshold: 45 seconds
 - Minimum lift: 1.5
+- Minimum confidence: 0.10
+- Minimum support: 0.012 (1.2% of the mined transaction sample)
 - Discount: 5 percent
 - A coupon is issued only when the viewed product is not already in the cart.
 - The strongest qualifying supporting cart item wins.
 - A user/product pair receives at most one coupon decision per engine lifetime.
 
-This is a demonstration policy, not evidence that a 5% discount increases conversion. Evaluation and guardrails are separate work.
+The storefront publishes events for its own browser-scoped `user_id` and `session_id`, and filters coupon activity back to that same pair. The Signal Room intentionally remains global for operators. Dwell time alone is not sufficient: the association must also pass the rule-quality thresholds. This is a demonstration policy, not evidence that a 5% discount increases conversion. Evaluation and guardrails are separate work.
 
 ## Batch rules: correctness requirements
 

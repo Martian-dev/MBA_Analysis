@@ -54,11 +54,47 @@ def test_low_lift_does_not_issue_coupon():
     assert engine.process(event("product_view_ended", "tortillas", dwell_seconds=60)) is None
 
 
+def test_dwell_alone_is_not_enough_without_rule_confidence():
+    engine = CouponEngine(
+        FakeRules({("avocado", "tortillas"): {"support": 0.02, "confidence": 0.09, "lift": 2.1}})
+    )
+    engine.process(event("cart_item_added", "avocado"))
+    decision, reason = engine.evaluate(event("product_view_ended", "tortillas", dwell_seconds=60))
+    assert decision is None
+    assert reason == "below_confidence_threshold"
+
+
+def test_dwell_alone_is_not_enough_without_rule_support():
+    engine = CouponEngine(
+        FakeRules({("avocado", "tortillas"): {"support": 0.011, "confidence": 0.3, "lift": 2.1}})
+    )
+    engine.process(event("cart_item_added", "avocado"))
+    decision, reason = engine.evaluate(event("product_view_ended", "tortillas", dwell_seconds=60))
+    assert decision is None
+    assert reason == "below_support_threshold"
+
+
 def test_coupon_is_idempotent_for_user_and_product():
     engine = CouponEngine(FakeRules({("avocado", "tortillas"): {"support": 0.02, "confidence": 0.3, "lift": 2.1}}))
     engine.process(event("cart_item_added", "avocado"))
     first = engine.process(event("product_view_ended", "tortillas", dwell_seconds=60))
     second = engine.process({**event("product_view_ended", "tortillas", dwell_seconds=60), "event_id": "second"})
+    assert first is not None
+    assert second is None
+
+
+def test_coupon_guardrail_is_customer_scoped_across_sessions():
+    engine = CouponEngine(
+        FakeRules({("avocado", "tortillas"): {"support": 0.02, "confidence": 0.3, "lift": 2.1}})
+    )
+    engine.process(event("cart_item_added", "avocado"))
+    first = engine.process(event("product_view_ended", "tortillas", dwell_seconds=60))
+    engine.process({**event("cart_item_added", "avocado"), "session_id": "s2"})
+    second = engine.process({
+        **event("product_view_ended", "tortillas", dwell_seconds=60),
+        "event_id": "second-session-event",
+        "session_id": "s2",
+    })
     assert first is not None
     assert second is None
 
