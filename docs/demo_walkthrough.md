@@ -32,6 +32,6 @@ Open both pages:
 
 ## Be precise about the demo
 
-The feed is synthetic, but it samples real product names and qualifying association pairs from `app/rules.csv`. The coupon percentage and rule metrics are real values from the current rule artifact. The storefront prices are labelled illustrative because the Instacart dataset contains order history, not retail prices; the monetary savings is therefore a presentation aid, not a historical price claim. The browser storefront is scoped to its own customer/session; the randomized simulator's offers remain visible to operators in the Signal Room, not to every storefront visitor.
+The feed is synthetic, but it samples real product names and qualifying association pairs from `app/rules.csv`. The coupon percentage and rule metrics are real values from the current rule artifact. The storefront prices are labelled illustrative INR amounts because the Instacart dataset contains order history, not retail prices; the monetary savings is therefore a presentation aid, not a historical price claim. The browser storefront is scoped to its own customer/session; the randomized simulator's offers remain visible to operators in the Signal Room, not to every storefront visitor.
 
 The customer-facing offer is currently a local demonstration of the `coupon.issued` decision. It does not redeem a real discount or call a payment service.

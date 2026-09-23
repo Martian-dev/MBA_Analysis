@@ -40,8 +40,8 @@ document.addEventListener('DOMContentLoaded', () => {
         '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
     }[character]));
 
-    // The source data contains no prices. This stable synthetic price lets the
-    // demo show a savings amount without presenting it as historical data.
+    // The source data contains no prices. This stable synthetic INR price lets
+    // the demo show a savings amount without presenting it as historical data.
     function demoPrice(productName) {
         let hash = 0;
         for (const character of productName) hash = ((hash << 5) - hash + character.charCodeAt(0)) | 0;
@@ -49,7 +49,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function money(value) {
-        return `$${Number(value || 0).toFixed(2)}`;
+        return `₹${Number(value || 0).toFixed(2)}`;
     }
 
     function getEmoji(name) {
@@ -107,7 +107,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     <div class="product-icon" aria-hidden="true">${getEmoji(productName)}</div>
                     ${offer ? `<span class="offer-badge${isApplied ? ' applied' : ''}">${isApplied ? 'Offer applied' : `${escapeHtml(offer.discount_percent)}% offer live`}</span>` : ''}
                     <div class="product-name">${escapeHtml(productName)}</div>
-                    <span class="price-note">illustrative demo price</span>
+                    <span class="price-note">illustrative INR demo price</span>
                 </div>
                 <div class="action-area" data-action-item="${escapeHtml(productName)}"></div>
             `;
@@ -298,7 +298,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <div class="offer-kicker">COUPON ISSUED · LIVE</div>
             <h3>${escapeHtml(product)}</h3>
             <p class="offer-subtitle">A targeted offer is ready for this hesitant shopper.</p>
-            <div class="offer-value-row"><span class="offer-value">${escapeHtml(latestOffer.discount_percent)}%</span><span class="offer-value-copy">off this item<br><small>≈ ${money(savings)} at demo price</small></span></div>
+            <div class="offer-value-row"><span class="offer-value">${escapeHtml(latestOffer.discount_percent)}%</span><span class="offer-value-copy">off this item<br><small>≈ ${money(savings)} at demo INR price</small></span></div>
             <dl class="offer-evidence"><div><dt>Cart evidence</dt><dd>${escapeHtml(latestOffer.supporting_cart_item)}</dd></div><div><dt>Dwell</dt><dd>${escapeHtml(latestOffer.reason?.dwell_seconds)}s</dd></div><div><dt>Rule lift</dt><dd>${Number(latestOffer.lift).toFixed(2)}</dd></div><div><dt>Confidence</dt><dd>${(Number(latestOffer.confidence) * 100).toFixed(1)}%</dd></div></dl>
             <span class="offer-id">ID · ${escapeHtml(latestOffer.coupon_id)}</span>
             <button class="offer-action${applied ? ' applied' : ''}" type="button">${applied ? 'Coupon applied to this basket' : `Add ${escapeHtml(product)} & apply ${escapeHtml(latestOffer.discount_percent)}% off`}</button>`;
