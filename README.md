@@ -23,6 +23,10 @@ Then open <http://127.0.0.1:5000/viewer>. The launcher continuously samples real
 
 Runtime logs are retained under `.runtime/live/` for troubleshooting.
 
+The storefront at <http://127.0.0.1:5000/> now consumes the same live activity stream. Its Coupon desk shows the issued percentage, an illustrative savings amount, coupon ID, supporting cart item, dwell time, lift, and confidence. Use **Add … & apply …% off** to demonstrate the decision as a customer-facing basket change. Prices are explicitly illustrative because the Instacart source contains purchase history, not retail prices; production pricing should come from the catalog service.
+
+For a presentation script, see [`docs/demo_walkthrough.md`](docs/demo_walkthrough.md).
+
 For the shortest demonstration, run:
 
 ```bash

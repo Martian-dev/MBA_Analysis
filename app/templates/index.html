@@ -1,38 +1,78 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Market Basket Analyzer</title>
+    <title>Basket Signal · Live storefront</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body>
     <header class="navbar">
-        <div class="logo">🛒 AI Market Basket Analyzer</div>
-        <a class="viewer-link" href="/viewer">Open signal room →</a>
-        <div class="search-container">
-            <input type="text" id="search-bar" placeholder="Search for products...">
+        <a class="brand" href="/" aria-label="Basket Signal home">
+            <span class="brand-mark">B<span>·</span>S</span>
+            <span>Basket Signal <small>LIVE STOREFRONT</small></span>
+        </a>
+        <div class="nav-actions">
+            <span class="store-status" id="store-status"><i></i> Personalization online</span>
+            <a class="viewer-link" href="/viewer">Open signal room <span aria-hidden="true">↗</span></a>
         </div>
     </header>
 
-    <div class="layout-wrapper">
-        <main class="store-section">
-            <div class="loading" id="loading-message">Loading store catalog...</div>
-            <div class="product-grid" id="product-grid"></div>
-        </main>
-
-        <aside class="cart-section">
-            <div class="cart-container">
-                <h2>Your Cart</h2>
-                <ul id="cart-items">
-                    <li class="empty-cart">Cart is empty</li>
-                </ul>
-                <div class="cart-total">
-                    <strong>Total Items: </strong> <span id="cart-count">0</span>
+    <main>
+        <section class="hero" aria-labelledby="hero-title">
+            <div class="hero-copy">
+                <p class="eyebrow">LIVE BASKET / REAL-TIME OFFERING</p>
+                <h1 id="hero-title">A better basket, right when hesitation shows.</h1>
+                <p class="hero-lede">Browse the assortment, build a basket, and watch the stream engine surface a targeted offer. The offer card below is fed by the same Kafka decision that powers the Signal Room.</p>
+                <div class="hero-chips" aria-label="Demo capabilities">
+                    <span>Cart-aware</span><span>Dwell-aware</span><span>Lift-checked</span>
                 </div>
             </div>
-        </aside>
-    </div>
+            <div class="hero-note">
+                <span class="hero-note-icon" aria-hidden="true">✦</span>
+                <div><strong>What this proves</strong><p>A coupon is not a generic banner. It is issued for one product, with evidence from the cart and the shopper's live behavior.</p></div>
+            </div>
+        </section>
+
+        <section class="demo-strip" aria-label="Demo data note">
+            <span class="pulse" aria-hidden="true"></span>
+            <strong>Demo mode</strong>
+            <span>Products and associations come from the MBA rule artifact. Prices are illustrative so the coupon savings can be shown; production pricing would come from the catalog.</span>
+            <a href="/viewer">See every decision in the Signal Room →</a>
+        </section>
+
+        <div class="layout-wrapper">
+            <section class="store-section" aria-labelledby="catalog-title">
+                <div class="section-heading">
+                    <div><p class="eyebrow">01 / ASSORTMENT</p><h2 id="catalog-title">Build your basket</h2></div>
+                    <label class="search-wrap" for="search-bar"><span aria-hidden="true">⌕</span><input type="search" id="search-bar" placeholder="Search the assortment" autocomplete="off"></label>
+                </div>
+                <div class="catalog-meta"><span id="catalog-count">Loading assortment…</span><span class="catalog-rule">Representative products with qualifying associations</span></div>
+                <div class="loading" id="loading-message">Loading the live assortment…</div>
+                <div class="product-grid" id="product-grid"></div>
+            </section>
+
+            <aside class="cart-section" aria-label="Basket and live coupon">
+                <div class="cart-container">
+                    <div class="cart-heading"><div><p class="eyebrow">02 / YOUR BASKET</p><h2>Your basket <span class="cart-count-badge" id="cart-count">0</span></h2></div><span class="basket-state" id="basket-state">Empty</span></div>
+                    <ul id="cart-items"><li class="empty-cart">Add an item to start the decision loop.</li></ul>
+                    <div class="cart-summary">
+                        <div><span>Subtotal</span><strong id="cart-subtotal">$0.00</strong></div>
+                        <div class="savings-row"><span>Offer savings</span><strong id="cart-savings">−$0.00</strong></div>
+                        <div class="total-row"><span>Demo total</span><strong id="cart-total">$0.00</strong></div>
+                    </div>
+                    <button class="checkout-btn" type="button" disabled>Continue to checkout <span aria-hidden="true">→</span></button>
+                </div>
+
+                <section class="coupon-desk" aria-labelledby="coupon-title">
+                    <div class="coupon-heading"><div><p class="eyebrow">03 / LIVE DECISION</p><h2 id="coupon-title">Coupon desk</h2></div><span class="decision-state" id="decision-state">Listening</span></div>
+                    <div id="live-offer" class="live-offer empty-offer"><span class="offer-spark" aria-hidden="true">✦</span><strong>Waiting for a qualifying view</strong><p>When the stream sees a long view on a correlated product, the offer will appear here with its evidence.</p></div>
+                </section>
+
+                <div class="proof-link"><span class="proof-dot" aria-hidden="true"></span><div><strong>The same event feeds both surfaces.</strong><p>Use the Signal Room to inspect the raw event, decision reason, and rule metrics.</p></div><a href="/viewer" aria-label="Open the Signal Room">↗</a></div>
+            </aside>
+        </div>
+    </main>
 
     <script src="{{ url_for('static', filename='js/script.js') }}"></script>
 </body>

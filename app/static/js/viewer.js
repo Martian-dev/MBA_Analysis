@@ -29,7 +29,9 @@ function rowFor(entry, isNew=false) {
   li.querySelector('.who strong').textContent = text(payload.user_id);
   li.querySelector('.who span').textContent = actionLabel(payload.event_type);
   li.querySelector('.product').textContent = text(payload.product_id);
-  li.querySelector('.outcome').textContent = entry.kind === 'coupon_issued' ? 'Coupon issued' : reasonLabel(payload.reason);
+  li.querySelector('.outcome').textContent = entry.kind === 'coupon_issued'
+    ? `${text(payload.discount_percent)}% off · Issued`
+    : reasonLabel(payload.reason);
   return li;
 }
 
@@ -40,13 +42,14 @@ function showDecision(entry) {
   target.innerHTML = '';
   const offer = document.createElement('div');
   offer.className = 'offer';
-  offer.innerHTML = `<div class="offer-kicker">COUPON ISSUED</div><h3 class="offer-product"></h3><div class="offer-value"><span></span><small> off</small></div><dl class="evidence"><div><dt>Cart evidence</dt><dd class="support"></dd></div><div><dt>Observed dwell</dt><dd class="dwell"></dd></div><div><dt>Rule lift</dt><dd class="lift"></dd></div><div><dt>Confidence</dt><dd class="confidence"></dd></div></dl>`;
+  offer.innerHTML = `<div class="offer-kicker">COUPON ISSUED · MOCK OFFER</div><h3 class="offer-product"></h3><div class="offer-value"><span></span><small> off</small></div><p class="offer-summary">This offer is ready to be applied to the viewed product.</p><dl class="evidence"><div><dt>Cart evidence</dt><dd class="support"></dd></div><div><dt>Observed dwell</dt><dd class="dwell"></dd></div><div><dt>Rule lift</dt><dd class="lift"></dd></div><div><dt>Confidence</dt><dd class="confidence"></dd></div></dl><span class="offer-id"></span>`;
   offer.querySelector('.offer-product').textContent = p.product_id;
   offer.querySelector('.offer-value span').textContent = `${p.discount_percent}%`;
   offer.querySelector('.support').textContent = p.supporting_cart_item;
   offer.querySelector('.dwell').textContent = `${p.reason.dwell_seconds}s`;
   offer.querySelector('.lift').textContent = Number(p.lift).toFixed(2);
   offer.querySelector('.confidence').textContent = `${(Number(p.confidence) * 100).toFixed(1)}%`;
+  offer.querySelector('.offer-id').textContent = `Coupon ID · ${p.coupon_id}`;
   target.append(offer);
 }
 
