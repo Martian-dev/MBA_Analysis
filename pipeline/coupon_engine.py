@@ -127,7 +127,7 @@ class CouponEngine:
             "event_type": "coupon_issued",
             "event_time": event["event_time"],
             "event_id": f"coupon:{event['event_id']}:{product}",
-            "coupon_id": f"coupon:{event['user_id']}:{event['session_id']}:{product}",
+            "coupon_id": f"coupon:{event['event_id']}:{product}",
             "user_id": event["user_id"],
             "session_id": event["session_id"],
             "product_id": product,

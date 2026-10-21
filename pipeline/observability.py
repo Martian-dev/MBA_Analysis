@@ -11,6 +11,7 @@ STREAM_KEY = "mba:observer:activity:v1"
 COUNTS_KEY = "mba:observer:counts:v1"
 MAX_EVENTS = 1000
 COUPON_KEY_PREFIX = "mba:coupon:v1:"
+COUPON_RETENTION_SECONDS = 7 * 24 * 60 * 60
 
 
 class ActivityLog:
@@ -75,7 +76,8 @@ for index, key in ipairs(KEYS) do
     if redis.call('EXISTS', key) == 1
         and redis.call('HGET', key, 'user_id') == ARGV[1]
         and redis.call('HGET', key, 'session_id') == ARGV[2]
-        and not redis.call('HGET', key, 'redeemed_order_id') then
+        and (not redis.call('HGET', key, 'redeemed_order_id')
+            or redis.call('HGET', key, 'redeemed_order_id') == ARGV[3]) then
         redis.call('HSET', key, 'redeemed_order_id', ARGV[3], 'redeemed_at', ARGV[4])
         table.insert(redeemed, ARGV[index + 4])
     end
@@ -99,7 +101,11 @@ return redeemed
             "discount_percent": str(coupon["discount_percent"]),
             "issued_at": str(coupon["event_time"]),
         }
-        self.client.hset(self._key(fields["coupon_id"]), mapping=fields)
+        key = self._key(fields["coupon_id"])
+        pipe = self.client.pipeline()
+        pipe.hset(key, mapping=fields)
+        pipe.expire(key, COUPON_RETENTION_SECONDS)
+        pipe.execute()
 
     def redeem(
         self,
@@ -108,10 +114,23 @@ return redeemed
         user_id: str,
         session_id: str,
         order_id: str,
+        allowed_product_ids: set[str] | None = None,
     ) -> list[dict[str, str]]:
         unique_ids = list(dict.fromkeys(coupon_ids))
         if not unique_ids:
             return []
+        if allowed_product_ids is not None:
+            pipe = self.client.pipeline()
+            for coupon_id in unique_ids:
+                pipe.hgetall(self._key(coupon_id))
+            records = pipe.execute()
+            unique_ids = [
+                coupon_id
+                for coupon_id, record in zip(unique_ids, records)
+                if str(record.get("product_id", "")) in allowed_product_ids
+            ]
+            if not unique_ids:
+                return []
         redeemed_at = datetime.now(timezone.utc).isoformat()
         redeemed_ids = self.client.eval(
             self._REDEEM_SCRIPT,

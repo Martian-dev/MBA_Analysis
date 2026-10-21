@@ -25,6 +25,8 @@ from .adaptive import (
 )
 from .contracts import validate_event
 
+DEFAULT_ADAPTIVE_NAMESPACE = "mba:adaptive:v1"
+
 
 def _text(value: Any) -> str | None:
     if value is None:
@@ -311,7 +313,7 @@ class RedisAdaptiveRankingService(AdaptiveRankingService):
         self,
         client: Any,
         *,
-        namespace: str = "mba:adaptive:v1",
+        namespace: str = DEFAULT_ADAPTIVE_NAMESPACE,
         impression_ttl_seconds: int = 86_400,
         dedup_ttl_seconds: int = 86_400,
         **options: Any,

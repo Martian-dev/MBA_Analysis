@@ -23,6 +23,7 @@ from redis.exceptions import RedisError
 
 from pipeline.contracts import validate_event
 from pipeline.adaptive import create_adaptive_service
+from pipeline.adaptive_redis import create_redis_adaptive_service
 from pipeline.observability import ActivityLog, CouponLedger
 from pipeline.serialization import JsonSerializer
 from pipeline.topics import EVENTS_TOPIC
@@ -54,7 +55,16 @@ _event_publish_lock = threading.Lock()
 _event_retry_after = 0.0
 _order_lock = threading.Lock()
 _adaptive_lock = threading.Lock()
-adaptive_service = create_adaptive_service()
+
+
+def _configured_adaptive_service():
+    redis_url = os.getenv("ADAPTIVE_REDIS_URL", "").strip()
+    if redis_url:
+        return create_redis_adaptive_service(Redis.from_url(redis_url, decode_responses=True))
+    return create_adaptive_service()
+
+
+adaptive_service = _configured_adaptive_service()
 
 
 def _demo_price(product_id: int) -> float:
@@ -561,6 +571,8 @@ def create_order():
                 user_id=data["user_id"],
                 session_id=data["session_id"],
                 order_id=data["order_id"],
+                allowed_product_ids={str(line["product_id"]) for line in line_items}
+                | {line["product_name"] for line in line_items},
             )
         except RedisError:
             return jsonify({"error": "Coupon service is unavailable; retry checkout."}), 503

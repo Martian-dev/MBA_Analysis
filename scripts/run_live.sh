@@ -72,7 +72,8 @@ uv run python -m pipeline.live_simulator --interval "${SIMULATOR_INTERVAL:-2}" \
 simulator_pid=$!
 
 echo "Starting the viewer..."
-uv run flask --app app.main run --host 0.0.0.0 --port 5000 \
+ADAPTIVE_REDIS_URL="${REDIS_URL:-redis://localhost:6379/0}" \
+  uv run flask --app app.main run --host 0.0.0.0 --port 5000 \
   >"$runtime_dir/flask.log" 2>&1 &
 flask_pid=$!
 

@@ -13,7 +13,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping
 
-from .adaptive import AdaptiveRankingService, create_adaptive_service
+from redis import Redis
+
+from .adaptive import AdaptiveRankingService
+from .adaptive_redis import create_redis_adaptive_service
 from .contracts import validate_event
 from .topics import EVENTS_TOPIC
 
@@ -197,7 +200,10 @@ def main() -> None:
         raise SystemExit("PySpark is required: install the project Spark dependency") from exc
 
     spark = SparkSession.builder.appName("mba-live-adaptive-features").getOrCreate()
-    service = create_adaptive_service()
+    redis_url = os.getenv("ADAPTIVE_REDIS_URL", os.getenv("REDIS_URL", "redis://localhost:6379/0"))
+    redis_client = Redis.from_url(redis_url, decode_responses=True)
+    redis_client.ping()
+    service = create_redis_adaptive_service(redis_client)
     query = build_query(
         spark,
         bootstrap_servers=args.bootstrap_servers,

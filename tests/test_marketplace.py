@@ -209,6 +209,7 @@ def test_checkout_persists_a_demo_order_and_owner_can_look_it_up(client, monkeyp
             assert kwargs == {
                 "user_id": "shopper-test", "session_id": "session-test",
                 "order_id": "BS-test-order-001",
+                "allowed_product_ids": {"24852", "1", "Banana", "Chocolate Sandwich Cookies"},
             }
             return [{
                 "coupon_id": "coupon-test", "product_id": "Banana",
@@ -261,10 +262,23 @@ def test_checkout_ignores_unissued_client_discount(client, monkeypatch):
     assert response.get_json()["order"]["savings_inr"] == 0
 
 
-def test_exact_product_names_win_and_ambiguous_casefold_is_rejected():
-    assert main._product_for("Biotin 1000 mcg")["product_id"] == 42
-    assert main._product_for("Biotin 1000 Mcg")["product_id"] == 2059
-    assert main._product_for("BIOTIN 1000 MCG") is None
+def test_exact_product_names_win_and_ambiguous_casefold_is_rejected_via_http(client):
+    lower = client.get("/api/recommend?item=Biotin%201000%20mcg")
+    title = client.get("/api/recommend?item=Biotin%201000%20Mcg")
+    ambiguous = client.get("/api/recommend?item=BIOTIN%201000%20MCG")
+
+    assert lower.get_json()["product"]["product_id"] == 42
+    assert title.get_json()["product"]["product_id"] == 2059
+    assert ambiguous.status_code == 400
+
+
+def test_closed_basket_drawer_is_inert_modal_markup(client):
+    page = client.get("/")
+
+    assert page.status_code == 200
+    assert b'role="dialog"' in page.data
+    assert b'aria-modal="true"' in page.data
+    assert b'aria-hidden="true" inert' in page.data
 
 
 def test_checkout_rejects_empty_or_malformed_orders(client):

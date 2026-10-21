@@ -234,9 +234,12 @@ class _ActionState:
 class InMemoryLinUCBState:
     """Disjoint LinUCB state using Sherman-Morrison inverse updates."""
 
-    def __init__(self, dimensions: int = len(FEATURE_NAMES)) -> None:
+    def __init__(
+        self, dimensions: int = len(FEATURE_NAMES), max_actions: int = 50_000
+    ) -> None:
         self.dimensions = dimensions
-        self._actions: dict[str, _ActionState] = {}
+        self.max_actions = max_actions
+        self._actions: OrderedDict[str, _ActionState] = OrderedDict()
         self._update_count = 0
 
     def has_observations(self) -> bool:
@@ -249,6 +252,9 @@ class InMemoryLinUCBState:
                 for row in range(self.dimensions)
             ]
             self._actions[product_id] = _ActionState(identity, [0.0] * self.dimensions)
+        self._actions.move_to_end(product_id)
+        while len(self._actions) > self.max_actions:
+            self._actions.popitem(last=False)
         return self._actions[product_id]
 
     def score(

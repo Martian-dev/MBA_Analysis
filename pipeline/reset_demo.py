@@ -9,7 +9,8 @@ import time
 import redis
 from kafka.admin import KafkaAdminClient
 
-from .observability import COUNTS_KEY, STREAM_KEY
+from .observability import COUNTS_KEY, COUPON_KEY_PREFIX, STREAM_KEY
+from .adaptive_redis import DEFAULT_ADAPTIVE_NAMESPACE
 from .topics import COUPONS_TOPIC, EVENTS_TOPIC, ensure_topics
 
 
@@ -42,7 +43,9 @@ def reset_kafka(bootstrap_servers: str) -> None:
 
 def reset_redis(redis_url: str) -> None:
     client = redis.Redis.from_url(redis_url, decode_responses=True)
-    client.delete(STREAM_KEY, COUNTS_KEY)
+    coupon_keys = list(client.scan_iter(match=f"{COUPON_KEY_PREFIX}*", count=500))
+    adaptive_keys = list(client.scan_iter(match=f"{DEFAULT_ADAPTIVE_NAMESPACE}:*", count=500))
+    client.delete(STREAM_KEY, COUNTS_KEY, *coupon_keys, *adaptive_keys)
 
 
 def main() -> None:
@@ -58,7 +61,7 @@ def main() -> None:
     args = parser.parse_args()
     reset_redis(args.redis_url)
     reset_kafka(args.bootstrap_servers)
-    print(f"Fresh demo state ready: {EVENTS_TOPIC}, {COUPONS_TOPIC}, Redis activity log")
+    print(f"Fresh demo state ready: {EVENTS_TOPIC}, {COUPONS_TOPIC}, Redis runtime state")
 
 
 if __name__ == "__main__":
