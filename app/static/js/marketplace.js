@@ -59,9 +59,9 @@
 
     function productCard(product, options = {}) {
         const source = options.source || 'catalog';
-        const recommendationId = options.recommendationId || product.recommendation_id || '';
+        const impressionId = options.impressionId || product.impression_id || '';
         return `<article class="product-card" data-product-card="${product.product_id}">
-            <a class="product-card__link" href="/product/${product.product_id}" data-product-link data-product-id="${product.product_id}" data-product-name="${escapeHtml(product.product_name)}" data-source="${escapeHtml(source)}" data-recommendation-id="${escapeHtml(recommendationId)}">
+            <a class="product-card__link" href="/product/${product.product_id}" data-product-link data-product-id="${product.product_id}" data-product-name="${escapeHtml(product.product_name)}" data-source="${escapeHtml(source)}" data-impression-id="${escapeHtml(impressionId)}">
                 ${productArtwork(product)}
                 <span class="product-card__aisle">${escapeHtml(titleCase(product.aisle))}</span>
                 <h3>${escapeHtml(product.product_name)}</h3>
@@ -175,13 +175,13 @@
         const list = document.querySelector('[data-pairing-list]');
         if (!section || !list) return;
         try {
-            const response = await fetch('/api/cart-recommend', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({cart: getCart().map(item => item.product_id)})});
+            const response = await fetch('/api/cart-recommend', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({cart: getCart().map(item => item.product_id), user_id: identity.userId, session_id: identity.sessionId})});
             const data = await response.json(); const pairings = data.recommendations?.slice(0, 3) || [];
             section.hidden = !pairings.length;
-            list.innerHTML = pairings.map(product => `<div class="mini-pairing">${productArtwork(product)}<a href="/product/${product.product_id}" data-product-link data-source="cart_pairing" data-product-id="${product.product_id}" data-product-name="${escapeHtml(product.product_name)}" data-recommendation-id="${escapeHtml(product.recommendation_id)}"><strong>${escapeHtml(product.product_name)}</strong><small>with ${escapeHtml(product.supporting_product_name)}</small></a><button type="button" data-add-product='${escapeHtml(JSON.stringify(product))}' aria-label="Add ${escapeHtml(product.product_name)}">${icon('plus')}</button></div>`).join('');
+            list.innerHTML = pairings.map(product => `<div class="mini-pairing">${productArtwork(product)}<a href="/product/${product.product_id}" data-product-link data-source="cart_pairing" data-product-id="${product.product_id}" data-product-name="${escapeHtml(product.product_name)}" data-impression-id="${escapeHtml(product.impression_id)}"><strong>${escapeHtml(product.product_name)}</strong><small>with ${escapeHtml(product.supporting_product_name)}</small></a><button type="button" data-add-product='${escapeHtml(JSON.stringify(product))}' aria-label="Add ${escapeHtml(product.product_name)}">${icon('plus')}</button></div>`).join('');
             pairings.forEach(product => publish('recommendation_impression', {
                 product_id: product.product_name, catalog_product_id: product.product_id,
-                product_name: product.product_name, recommendation_id: product.recommendation_id,
+                product_name: product.product_name, impression_id: product.impression_id,
                 placement: 'cart_drawer', supporting_product_id: product.supporting_product_id,
             }).catch(() => {}));
         } catch (_) { section.hidden = true; }
@@ -217,11 +217,6 @@
         region.hidden = false;
         region.innerHTML = `<div class="coupon-stamp"><small>Live basket offer</small><strong>${escapeHtml(payload.discount_percent)}% off</strong></div><div><strong>${escapeHtml(product.product_name)}</strong><p>Because ${escapeHtml(payload.supporting_cart_item || 'your basket')} is already in your basket.</p><button class="text-button" type="button" data-apply-live-coupon>Apply to basket</button></div>`;
         region.querySelector('[data-apply-live-coupon]').addEventListener('click', () => applyCoupon(payload, product));
-        publish('coupon_impression', {
-            product_id: product.product_name, catalog_product_id: product.product_id,
-            product_name: product.product_name, coupon_id: payload.coupon_id,
-            discount_percent: Number(payload.discount_percent), placement: 'cart_drawer',
-        }).catch(() => {});
     }
 
     async function connectActivity() {
@@ -245,7 +240,7 @@
         const productLink = event.target.closest('[data-product-link]');
         if (productLink && productLink.dataset.source !== 'catalog') publish('recommendation_clicked', {
             product_id: productLink.dataset.productName, catalog_product_id: Number(productLink.dataset.productId),
-            product_name: productLink.dataset.productName, recommendation_id: productLink.dataset.recommendationId,
+            product_name: productLink.dataset.productName, impression_id: productLink.dataset.impressionId || undefined,
             placement: productLink.dataset.source,
         }, true).catch(() => {});
     });

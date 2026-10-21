@@ -21,6 +21,7 @@ from redis import Redis
 from redis.exceptions import RedisError
 
 from pipeline.contracts import validate_event
+from pipeline.adaptive import create_adaptive_service
 from pipeline.observability import ActivityLog
 from pipeline.serialization import JsonSerializer
 from pipeline.topics import EVENTS_TOPIC
@@ -47,6 +48,8 @@ departments: list[dict[str, Any]] = []
 aisles: list[dict[str, Any]] = []
 _event_producer = None
 _order_lock = threading.Lock()
+_adaptive_lock = threading.Lock()
+adaptive_service = create_adaptive_service()
 
 
 def _demo_price(product_id: int) -> float:
@@ -235,7 +238,12 @@ def publish_storefront_event():
         ).get(timeout=10)
     except KafkaError:
         return jsonify({"error": "Kafka is unavailable. Start the live stack."}), 503
-    return jsonify({"status": "accepted", "event_id": event["event_id"]}), 202
+    with _adaptive_lock:
+        feedback = adaptive_service.observe_event(event)
+    return jsonify({
+        "status": "accepted", "event_id": event["event_id"],
+        "adaptive_feedback_status": feedback.status,
+    }), 202
 
 
 @app.get("/api/activity/stream")
@@ -351,9 +359,48 @@ def get_cart_recommendations():
             recommendation["recommendation_id"] = f"cart:{supporting['product_id']}:{recommendation['product_id']}"
             result.append(recommendation)
             seen.add(recommendation["product_id"])
-            if len(result) >= 6:
-                return jsonify({"recommendations": result})
-    return jsonify({"recommendations": result})
+            if len(result) >= 12:
+                break
+        if len(result) >= 12:
+            break
+
+    user_id = str(data.get("user_id") or "marketplace-anonymous")
+    session_id = str(data.get("session_id") or "marketplace-session")
+    candidates = [
+        {
+            "product_id": item["product_name"],
+            "prior_score": float(item.get("lift") or (1 / (index + 1))),
+            "snapshot_version": "marketplace-rules-v1",
+            "supporting_product_id": item["supporting_product_name"],
+            "catalog_product_id": item["product_id"],
+        }
+        for index, item in enumerate(result)
+    ]
+    with _adaptive_lock:
+        decision = adaptive_service.rank_candidates(
+            user_id=user_id,
+            session_id=session_id,
+            candidates=candidates,
+            snapshot_version="marketplace-rules-v1",
+            cart_product_ids=[product["product_name"] for product in cart_products],
+            limit=6,
+        )
+    by_name = {item["product_name"]: item for item in result}
+    ranked = []
+    for ranked_item in decision["items"]:
+        product = by_name[ranked_item["product_id"]]
+        product["impression_id"] = decision["impression_id"]
+        product["policy_mode"] = decision["policy_mode"]
+        product["adaptive_score"] = ranked_item["score"]
+        product["adaptive_explanation"] = ranked_item["explanation"]
+        ranked.append(product)
+    return jsonify({
+        "recommendations": ranked,
+        "impression_id": decision["impression_id"],
+        "policy_version": decision["policy_version"],
+        "policy_mode": decision["policy_mode"],
+        "snapshot_version": decision["snapshot_version"],
+    })
 
 
 def _order_records() -> list[dict[str, Any]]:

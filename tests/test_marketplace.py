@@ -57,13 +57,20 @@ def test_deep_linked_product_page_and_detail_api_include_related_products(client
 
 
 def test_cart_recommendation_accepts_catalog_ids_and_excludes_cart(client):
-    response = client.post("/api/cart-recommend", json={"cart": [24852]})
+    response = client.post(
+        "/api/cart-recommend",
+        json={"cart": [24852], "user_id": "shopper-market", "session_id": "session-market"},
+    )
     assert response.status_code == 200
-    recommendations = response.get_json()["recommendations"]
+    payload = response.get_json()
+    recommendations = payload["recommendations"]
     assert recommendations
     assert all(product["product_id"] != 24852 for product in recommendations)
     assert all(product["supporting_product_id"] == 24852 for product in recommendations)
     assert all(product["recommendation_id"] for product in recommendations)
+    assert all(product["impression_id"] == payload["impression_id"] for product in recommendations)
+    assert payload["policy_mode"] in {"historical_cold_start", "adaptive_linucb"}
+    assert payload["policy_version"] == "linucb-v1"
 
 
 def test_event_api_validates_and_publishes_through_existing_stream_seam(client, monkeypatch):
