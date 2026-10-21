@@ -33,10 +33,12 @@ Browser acceptance was exercised in Chromium at desktop and 375 px widths:
 - complete the delivery form and create a demo order;
 - load the owner-scoped order confirmation;
 - verify no horizontal overflow at 375 px;
+- verify the basket modal traps focus, suppresses background shortcuts, closes
+  with Escape, and restores focus to its opener;
 - visually inspect the catalog, mobile market, and product page.
 
 The final run used the canonical-ID Spark artifact as `RULES_PATH` and completed
-as `2 passed (4.5s)`. An earlier run also caught and led to a fix for slow offline
+as `3 passed (5.0s)`. An earlier run also caught and led to a fix for slow offline
 telemetry: Kafka publication now uses a short fail-fast circuit, so an absent
 live stack does not delay local shopping or checkout.
 
@@ -98,12 +100,17 @@ through `AdaptiveForeachBatch` in a second, and observes the changed ranking
 from a third service instance.
 The same proof was repeated against Redis 7.4: the independent workers returned
 `101, 202` → `feedback=learned` → `202, 101` in `adaptive_linucb` mode.
+Shared feedback writes the model update, feature counters, retention expiries,
+and final event claim in one Redis transaction under a distributed lock. A
+forced pre-commit failure left no partial update and the same event then retried
+successfully. Malformed JSON and invalid timestamps remain in the Spark stream
+and reach the JSONL dead-letter sink instead of disappearing at parse time.
 
 ## Verification summary
 
 ```text
 uv sync                                      passed
-uv run pytest -q                             56 passed, 1 skipped
+uv run pytest -q                             61 passed, 1 skipped
 Docker Spark fixture artifact seam           passed
 Docker Spark bounded real-data run           passed
 Adaptive deterministic replay                ranking changed

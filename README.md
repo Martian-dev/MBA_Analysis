@@ -70,9 +70,9 @@ For a fresh end-to-end run, use the root launcher:
 Then open <http://127.0.0.1:5000/viewer>. The launcher continuously samples
 real products and qualifying association pairs from `RULES_PATH` (falling back
 to `app/rules.csv`), so the stream produces a mix of coupon decisions and
-suppressed decisions instead of replaying a fixed scenario. It clears only the
-demo's Kafka topics and Redis activity counters on startup; the rule artifact
-and source data are untouched. Press `Ctrl-C` to stop the application and local
+suppressed decisions instead of replaying a fixed scenario. It clears the
+demo's Kafka topics plus Redis activity, coupon, and adaptive runtime state on
+startup; the rule artifact and source data are untouched. Press `Ctrl-C` to stop the application and local
 infrastructure. Set `KEEP_INFRA=1` to leave Kafka and Redis running, or
 `SIMULATOR_INTERVAL=1` to increase the event rate.
 

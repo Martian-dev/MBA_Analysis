@@ -90,7 +90,11 @@ validates rows and normalizes catalog IDs before updating live features. The
 in-memory store supports deterministic coursework replay. The Redis adapter
 shares features, impressions, LinUCB matrices, decision sequencing, and event
 claims across Flask and Spark processes; its cross-instance test proves stream
-feedback changes a later marketplace-worker ranking.
+feedback changes a later marketplace-worker ranking. Shared feedback mutations
+and their event claim commit atomically; feature and model keys expire after
+seven days, while event claims and impressions use a 24-hour horizon. Invalid
+JSON and timestamps retain Kafka metadata and are written to the configured
+dead-letter JSONL sink.
 
 Coupon output events add `coupon_id`, `discount_percent`, `supporting_cart_item`, `lift`, `confidence`, `support`, and a `reason` object containing the dwell threshold and observed dwell time.
 
