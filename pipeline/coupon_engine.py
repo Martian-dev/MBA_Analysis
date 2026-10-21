@@ -47,12 +47,20 @@ class CouponEngine:
     def evaluate(self, event: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
         """Apply a shopper event and return the observable decision reason."""
         event = validate_event(event)
+        event_type = event["event_type"]
+        if event_type not in {
+            "cart_item_added",
+            "cart_item_removed",
+            "product_view_started",
+            "product_view_ended",
+        }:
+            return None, "ignored"
+
         session_key = (event["user_id"], event["session_id"])
         state = self._users.setdefault(session_key, UserState())
         self._users.move_to_end(session_key)
         if len(self._users) > 500:
             self._users.popitem(last=False)
-        event_type = event["event_type"]
         product = event["product_id"]
 
         if event_type == "cart_item_added":

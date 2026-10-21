@@ -11,12 +11,31 @@ EVENT_TYPES = frozenset(
         "product_view_ended",
         "cart_item_added",
         "cart_item_removed",
+        "search_performed",
+        "recommendation_impression",
+        "recommendation_clicked",
+        "coupon_applied",
+        "checkout_started",
+        "checkout_completed",
     }
 )
 
 REQUIRED_FIELDS = frozenset(
-    {"event_id", "event_type", "event_time", "user_id", "session_id", "product_id"}
+    {"event_id", "event_type", "event_time", "user_id", "session_id"}
 )
+
+PRODUCT_EVENT_TYPES = frozenset(
+    {
+        "product_view_started",
+        "product_view_ended",
+        "cart_item_added",
+        "cart_item_removed",
+        "recommendation_impression",
+        "recommendation_clicked",
+        "coupon_applied",
+    }
+)
+CHECKOUT_EVENT_TYPES = frozenset({"checkout_started", "checkout_completed"})
 
 
 def utc_now_iso() -> str:
@@ -39,9 +58,33 @@ def validate_event(event: dict[str, Any]) -> dict[str, Any]:
     if event_type not in EVENT_TYPES:
         raise ValueError(f"unsupported event_type: {event_type}")
 
-    for field in ("event_id", "user_id", "session_id", "product_id"):
+    for field in ("event_id", "user_id", "session_id"):
         if not isinstance(event[field], str) or not event[field].strip():
             raise ValueError(f"{field} must be a non-empty string")
+
+    if event_type in PRODUCT_EVENT_TYPES:
+        product_id = event.get("product_id")
+        if not isinstance(product_id, str) or not product_id.strip():
+            raise ValueError("product_id must be a non-empty string")
+
+    if event_type == "search_performed":
+        query = event.get("query")
+        if not isinstance(query, str) or not query.strip():
+            raise ValueError("search_performed requires a non-empty query")
+
+    if event_type in CHECKOUT_EVENT_TYPES:
+        order_id = event.get("order_id")
+        if not isinstance(order_id, str) or not order_id.strip():
+            raise ValueError("checkout events require a non-empty order_id")
+        product_ids = event.get("product_ids")
+        if product_ids is not None and (
+            not isinstance(product_ids, list)
+            or any(
+                not isinstance(product_id, str) or not product_id.strip()
+                for product_id in product_ids
+            )
+        ):
+            raise ValueError("checkout product_ids must be a list of non-empty strings")
 
     try:
         parsed_time = datetime.fromisoformat(str(event["event_time"]).replace("Z", "+00:00"))

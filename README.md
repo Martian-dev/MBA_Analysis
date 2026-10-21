@@ -8,6 +8,8 @@ This repository is evolving from a Flask market-basket demo into a hybrid batch 
 - `bash scripts/run_live.sh` — recommended: continuous simulated clickstream plus the live Signal Room at `/viewer`.
 - `bash scripts/run_demo.sh` — finite three-event terminal demonstration; exits on its own.
 - `uv run flask --app app.main run` — storefront and viewer only; live infrastructure must already be running for viewer data.
+- `uv run --no-sync python -m pipeline.adaptive_replay` — deterministic proof that rewarded live feedback changes the next recommendation ranking.
+- `uv run --no-sync python -m pipeline.adaptive_streaming --checkpoint-location .runtime/checkpoints/adaptive-features` — Spark Structured Streaming feature updater (requires PySpark and the Kafka connector at runtime).
 
 ## Run the first vertical slice
 
@@ -77,3 +79,37 @@ docker compose -f infra/docker-compose.yml down
 `app/rules.csv` is a temporary artifact from the original prototype. Its old notebook flattened multi-item rules incorrectly. The new loader deduplicates directed pairs for deterministic demonstration only; the replacement Spark batch job must be built before treating the rule snapshot as a valid analytical result.
 
 The architecture, event contract, milestones, and unresolved decisions are in [`docs/architecture.md`](docs/architecture.md) and [`.scratch/realtime-contextual-mba/map.md`](.scratch/realtime-contextual-mba/map.md).
+
+## Live adaptive ranking
+
+`pipeline.adaptive.AdaptiveRankingService` is the application-facing adaptive
+decision seam. It accepts a versioned list of historical candidate dictionaries
+and returns ranked dictionaries containing both `impression_id` and
+`policy_version`. The ranking combines the historical prior with live session,
+shopper, product-response, and cart-pair features. A deterministic LinUCB policy
+learns only after feedback can be matched to an already-recorded impression.
+
+The supported feedback events are recommendation clicks, cart additions and
+removals, coupon applications, and completed checkouts. Duplicate event IDs do
+not train twice. Coupon quality, supporting-cart, already-in-cart, and frequency
+rules run before the bandit and cannot be overridden by a learned score. If the
+learning-state adapter is unavailable, candidates remain usable in historical
+prior order and the response identifies `historical_fallback` mode.
+
+Run the evidence replay:
+
+```bash
+uv run --no-sync python -m pipeline.adaptive_replay
+```
+
+It uses the committed `pipeline/fixtures/adaptive_replay.json` fixture. The
+expected first order is `bananas, berries`; after a recorded click on berries,
+the second order is `berries, bananas`.
+
+The Spark entry point parses Kafka JSON with an explicit schema, derives an
+event-time timestamp, applies a configurable watermark, and requires a durable
+checkpoint location. PySpark is deliberately imported only by the streaming
+entry point, so routine Flask startup and unit tests do not require Spark. The
+current reference adaptive store is process-local; a production deployment
+must replace it with a shared durable state adapter before independently scaled
+Flask and Spark processes can share learning state.
