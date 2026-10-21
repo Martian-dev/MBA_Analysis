@@ -251,6 +251,38 @@ def test_unavailable_shared_state_returns_public_historical_fallback():
     )
 
 
+def test_unavailable_shared_state_preserves_coupon_frequency_guardrail():
+    class UnavailableRedis:
+        def incr(self, key):
+            del key
+            raise RedisConnectionError("redis offline")
+
+    service = create_redis_adaptive_service(UnavailableRedis())
+    candidates = [{
+        "product_id": "offer",
+        "prior_score": 0.8,
+        "offer_type": "coupon",
+        "supporting_product_id": "cart-item",
+        "lift": 2.0,
+        "confidence": 0.3,
+        "support": 0.02,
+    }]
+    arguments = {
+        "user_id": "shopper-offline",
+        "session_id": "session-offline",
+        "candidates": candidates,
+        "snapshot_version": "spark-v1",
+        "cart_product_ids": ["cart-item"],
+    }
+
+    first = service.rank_candidates(**arguments)
+    assert [item["product_id"] for item in first["items"]] == ["offer"]
+    second = service.rank_candidates(**arguments)
+
+    assert second["items"] == []
+    assert second["suppressions"] == {"offer": "coupon_already_issued"}
+
+
 def test_feedback_transaction_is_retryable_without_partial_updates():
     redis = MemoryRedis()
     service = create_redis_adaptive_service(

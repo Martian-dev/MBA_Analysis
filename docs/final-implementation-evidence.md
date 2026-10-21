@@ -110,11 +110,11 @@ and reach the JSONL dead-letter sink instead of disappearing at parse time.
 
 ```text
 uv sync                                      passed
-uv run pytest -q                             61 passed, 1 skipped
+uv run pytest -q                             62 passed, 1 skipped
 Docker Spark fixture artifact seam           passed
 Docker Spark bounded real-data run           passed
 Adaptive deterministic replay                ranking changed
-Chromium desktop/mobile shopper journey      2 passed
+Chromium desktop/mobile shopper journey      3 passed
 JavaScript syntax checks                      passed
 git diff --check                             passed
 ```
