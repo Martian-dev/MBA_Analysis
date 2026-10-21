@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Checkout · Basket Signal</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body>
+    {% include '_market_header.html' %}
+    <main id="main-content" class="checkout-page">
+        <a class="back-link" href="/"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>Keep shopping</a>
+        <header class="checkout-heading"><p class="overline">Simulated checkout</p><h1>Bring the basket home.</h1><p>This demonstration saves a local order confirmation. It does not reserve inventory, charge a card, or arrange delivery.</p></header>
+        <div class="checkout-layout">
+            <form class="checkout-form" data-checkout-form novalidate>
+                <div class="checkout-step"><span>1</span><div><strong>Delivery details</strong><small>Required for this local order record</small></div></div>
+                <div class="field-grid">
+                    <label class="form-field form-field--wide"><span>Full name</span><input name="name" autocomplete="name" required><small data-error-for="name"></small></label>
+                    <label class="form-field form-field--wide"><span>Email</span><input name="email" type="email" autocomplete="email" required><small data-error-for="email"></small></label>
+                    <label class="form-field form-field--wide"><span>Delivery address</span><textarea name="address" autocomplete="street-address" rows="3" required></textarea><small data-error-for="address"></small></label>
+                    <label class="form-field"><span>City</span><input name="city" autocomplete="address-level2" required><small data-error-for="city"></small></label>
+                    <label class="form-field"><span>Postal code</span><input name="postal_code" inputmode="numeric" autocomplete="postal-code" required><small data-error-for="postal_code"></small></label>
+                </div>
+                <div class="checkout-step"><span>2</span><div><strong>Demo payment</strong><small>No financial details are collected</small></div></div>
+                <div class="demo-payment"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="2"/><path d="M3 10h18M7 15h4"/></svg><div><strong>Course demonstration</strong><p>Your order is confirmed without a payment provider. Nothing will be charged.</p></div><span>₹0 charged</span></div>
+                <div class="form-error" role="alert" data-form-error hidden></div>
+                <button class="button button--primary button--wide checkout-submit" type="submit">Confirm demo order<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></button>
+            </form>
+            <aside class="order-summary" aria-labelledby="summary-title"><p class="overline">Your basket</p><h2 id="summary-title">Order summary</h2><ul data-checkout-lines></ul><dl class="basket-totals"><div><dt>Subtotal</dt><dd data-checkout-subtotal>₹0.00</dd></div><div class="savings"><dt>Coupon savings</dt><dd data-checkout-savings>−₹0.00</dd></div><div class="grand-total"><dt>Demo total</dt><dd data-checkout-total>₹0.00</dd></div></dl><p class="price-disclosure">Illustrative INR prices only. No payment will be processed.</p></aside>
+        </div>
+    </main>
+    {% include '_cart_drawer.html' %}
+    <script src="{{ url_for('static', filename='js/marketplace.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/checkout.js') }}"></script>
+</body>
+</html>

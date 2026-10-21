@@ -3,77 +3,54 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Basket Signal · Live storefront</title>
+    <meta name="description" content="Browse the complete Instacart product catalog in a live, adaptive grocery marketplace demonstration.">
+    <title>Basket Signal · Neighbourhood grocery market</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
 <body>
-    <header class="navbar">
-        <a class="brand" href="/" aria-label="Basket Signal home">
-            <span class="brand-mark">B<span>·</span>S</span>
-            <span>Basket Signal <small>LIVE STOREFRONT</small></span>
-        </a>
-        <div class="nav-actions">
-            <span class="store-status" id="store-status"><i></i> Personalization online</span>
-            <a class="viewer-link" href="/viewer">Open signal room <span aria-hidden="true">↗</span></a>
-        </div>
-    </header>
-
-    <main>
-        <section class="hero" aria-labelledby="hero-title">
-            <div class="hero-copy">
-                <p class="eyebrow">LIVE BASKET / REAL-TIME OFFERING</p>
-                <h1 id="hero-title">A better basket, right when hesitation shows.</h1>
-                <p class="hero-lede">Browse the assortment, build a basket, and watch the stream engine surface a targeted offer. The offer card below is fed by the same Kafka decision that powers the Signal Room.</p>
-                <div class="hero-chips" aria-label="Demo capabilities">
-                    <span>Cart-aware</span><span>Dwell-aware</span><span>Lift-checked</span>
-                </div>
+    {% include '_market_header.html' %}
+    <main id="main-content">
+        <section class="market-hero">
+            <div class="market-hero__copy">
+                <p class="overline">Fresh picks · live pairings · one thoughtful basket</p>
+                <h1>The whole market,<br><em>picked your way.</em></h1>
+                <p>Search every product in the Instacart catalog. As your basket takes shape, Basket Signal learns from this visit and suggests useful pairings—not generic promotions.</p>
+                <a class="button button--primary" href="#market-catalog">Shop the aisles<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>
             </div>
-            <div class="hero-note">
-                <span class="hero-note-icon" aria-hidden="true">✦</span>
-                <div><strong>What this proves</strong><p>A coupon is not a generic banner. It is issued for one product, with evidence from the cart and the shopper's live behavior.</p></div>
+            <div class="market-hero__visual" aria-label="Illustration of a market basket with fresh groceries">
+                <span class="produce produce--leaf"><svg viewBox="0 0 100 100" aria-hidden="true"><path d="M16 83C8 45 30 11 82 9c1 49-26 76-66 74Z"/><path d="M18 80c16-29 35-45 59-62"/></svg></span>
+                <span class="produce produce--citrus"><svg viewBox="0 0 100 100" aria-hidden="true"><circle cx="50" cy="53" r="37"/><path d="M48 16c5-11 15-15 28-12-3 12-12 18-28 12Z"/></svg></span>
+                <span class="produce produce--bottle"><svg viewBox="0 0 100 130" aria-hidden="true"><path d="M35 10h30v24l10 17v65H25V51l10-17z"/><path d="M35 26h30M26 61h48"/></svg></span>
+                <div class="hero-basket"><svg viewBox="0 0 300 200" aria-hidden="true"><path d="M33 55h234l-26 124H59z"/><path d="M86 62C93 22 114 5 150 5s57 17 64 57"/><path d="M61 93h178M55 125h190M93 58 79 177M150 58v120M207 58l14 119"/></svg></div>
+                <div class="market-ticket"><small>Today’s basket</small><strong>Fresh, practical,<br>uniquely yours.</strong><span>49,688 products inside</span></div>
             </div>
         </section>
-
-        <section class="demo-strip" aria-label="Demo data note">
-            <span class="pulse" aria-hidden="true"></span>
-            <strong>Demo mode</strong>
-            <span>This page is one shopper session. Coupons are filtered to this browser's customer ID; another shopper cannot see them. Prices are illustrative INR amounts so the savings can be shown.</span>
-            <a href="/viewer">See every decision in the Signal Room →</a>
+        <section class="market-promise" aria-label="Market service information">
+            <div><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M3 12h18"/></svg><span><strong>49,688 grocery products</strong> from the complete local catalog</span></div>
+            <div><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13c3-7 9-10 16-9-1 8-6 14-16 16 0-3 0-5 0-7Z"/><path d="M5 18c4-5 8-8 13-11"/></svg><span><strong>Live basket pairings</strong> shaped by this shopping session</span></div>
+            <div><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16v12H4zM8 7V5h8v2M8 12h8"/></svg><span><strong>Simulated checkout</strong> with no real payment processed</span></div>
         </section>
-
-        <div class="layout-wrapper">
-            <section class="store-section" aria-labelledby="catalog-title">
-                <div class="section-heading">
-                    <div><p class="eyebrow">01 / ASSORTMENT</p><h2 id="catalog-title">Build your basket</h2></div>
-                    <label class="search-wrap" for="search-bar"><span aria-hidden="true">⌕</span><input type="search" id="search-bar" placeholder="Search the assortment" autocomplete="off"></label>
-                </div>
-                <div class="catalog-meta"><span id="catalog-count">Loading assortment…</span><span class="catalog-rule">Representative products with qualifying associations</span></div>
-                <div class="loading" id="loading-message">Loading the live assortment…</div>
-                <div class="product-grid" id="product-grid"></div>
-            </section>
-
-            <aside class="cart-section" aria-label="Basket and live coupon">
-                <div class="cart-container">
-                    <div class="cart-heading"><div><p class="eyebrow">02 / YOUR BASKET</p><h2>Your basket <span class="cart-count-badge" id="cart-count">0</span></h2><span class="session-label" id="session-label"></span></div><span class="basket-state" id="basket-state">Empty</span></div>
-                    <ul id="cart-items"><li class="empty-cart">Add an item to start the decision loop.</li></ul>
-                    <div class="cart-summary">
-                        <div><span>Subtotal</span><strong id="cart-subtotal">₹0.00</strong></div>
-                        <div class="savings-row"><span>Offer savings</span><strong id="cart-savings">−₹0.00</strong></div>
-                        <div class="total-row"><span>Demo total</span><strong id="cart-total">₹0.00</strong></div>
-                    </div>
-                    <button class="checkout-btn" type="button" disabled>Continue to checkout <span aria-hidden="true">→</span></button>
-                </div>
-
-                <section class="coupon-desk" aria-labelledby="coupon-title">
-                    <div class="coupon-heading"><div><p class="eyebrow">03 / LIVE DECISION</p><h2 id="coupon-title">Coupon desk</h2></div><span class="decision-state" id="decision-state">Listening</span></div>
-                    <div id="live-offer" class="live-offer empty-offer"><span class="offer-spark" aria-hidden="true">✦</span><strong>Waiting for a qualifying view</strong><p>When the stream sees a long view on a correlated product, the offer will appear here with its evidence.</p></div>
-                </section>
-
-                <div class="proof-link"><span class="proof-dot" aria-hidden="true"></span><div><strong>The same event feeds both surfaces.</strong><p>Use the Signal Room to inspect the raw event, decision reason, and rule metrics.</p></div><a href="/viewer" aria-label="Open the Signal Room">↗</a></div>
-            </aside>
-        </div>
+        <section class="catalog" id="market-catalog" aria-labelledby="catalog-title">
+            <div class="catalog__heading">
+                <div><p class="overline">Browse the market</p><h2 id="catalog-title">What’s going in your basket?</h2></div>
+                <p class="catalog__count" data-catalog-count>Opening the market…</p>
+            </div>
+            <div class="catalog__tools">
+                <label class="catalog-search" for="catalog-search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m16 16 5 5"/></svg><span class="sr-only">Search products</span><input id="catalog-search" type="search" placeholder="Try “oat milk” or “avocado”" autocomplete="off"><kbd>/</kbd></label>
+                <label class="select-field"><span>Department</span><select data-department-filter><option value="">All departments</option></select></label>
+                <label class="select-field"><span>Aisle</span><select data-aisle-filter><option value="">All aisles</option></select></label>
+            </div>
+            <div class="active-filter" data-active-filter hidden></div>
+            <div class="product-grid" data-product-grid aria-live="polite">
+                {% for _ in range(12) %}<div class="product-skeleton" aria-hidden="true"><span></span><i></i><b></b><b></b></div>{% endfor %}
+            </div>
+            <div class="catalog-empty" data-catalog-empty hidden><strong>No groceries matched that search.</strong><p>Try a shorter product name or clear one of the aisle filters.</p><button class="text-button" type="button" data-clear-filters>Clear all filters</button></div>
+            <nav class="pagination" data-pagination aria-label="Catalog pages"></nav>
+        </section>
     </main>
-
-    <script src="{{ url_for('static', filename='js/script.js') }}"></script>
+    <footer class="market-footer"><div><strong>Basket Signal</strong><span>A live grocery marketplace demonstration</span></div><p>Catalog metadata comes from Instacart. All INR prices, checkout, and fulfilment are illustrative.</p><a href="/viewer">Open Signal Room<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 17 17 7M8 7h9v9"/></svg></a></footer>
+    {% include '_cart_drawer.html' %}
+    <script src="{{ url_for('static', filename='js/marketplace.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/catalog.js') }}"></script>
 </body>
 </html>
