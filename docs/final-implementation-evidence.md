@@ -91,11 +91,19 @@ suite proves through HTTP that feedback on the second product-page candidate
 changes the subsequent ranking and moves the policy from
 `historical_cold_start` to `adaptive_linucb`.
 
+The deployed adapter persists features, recorded impressions, LinUCB matrices,
+decision sequencing, and event claims in Redis. A cross-instance acceptance
+test records a marketplace impression in one service, sends catalog-ID feedback
+through `AdaptiveForeachBatch` in a second, and observes the changed ranking
+from a third service instance.
+The same proof was repeated against Redis 7.4: the independent workers returned
+`101, 202` → `feedback=learned` → `202, 101` in `adaptive_linucb` mode.
+
 ## Verification summary
 
 ```text
 uv sync                                      passed
-uv run pytest -q                             52 passed, 1 skipped
+uv run pytest -q                             56 passed, 1 skipped
 Docker Spark fixture artifact seam           passed
 Docker Spark bounded real-data run           passed
 Adaptive deterministic replay                ranking changed
@@ -112,10 +120,10 @@ Spark environment.
 
 - Checkout creates a local demonstration record; it does not process payment,
   reserve inventory, fulfil an order, or send delivery notifications.
-- Adaptive state and impressions are process-local in this reference build.
-  Independently scaled Flask and streaming workers require a shared durable
-  state adapter.
-- Feedback deduplication retains the latest 50,000 successfully applied event
-  IDs; a shared deployment must preserve the same explicit retention policy.
+- Live adaptive features, impressions, LinUCB matrices, decision sequences,
+  and 24-hour event claims are shared through Redis across Flask and Spark
+  workers. The in-memory adapter remains available for deterministic replay.
+- This is a single-node reference deployment; production still needs Redis
+  durability, access control, monitoring, and a deliberate retention policy.
 - The bounded run is measured evidence, not a full-dataset benchmark. Use the
   documented full-mode command when final infrastructure capacity is known.

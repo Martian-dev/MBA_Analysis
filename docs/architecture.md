@@ -73,7 +73,8 @@ and per-feature contributions for auditability.
 
 The service writes the full displayed impression before it can consume click,
 cart, coupon, or checkout reward. It rejects unattributed feedback and duplicate
-IDs within its documented 50,000-event retention horizon. Candidate ordering falls back to the validated historical prior when
+IDs within the local 50,000-event or shared Redis 24-hour retention horizon.
+Candidate ordering falls back to the validated historical prior when
 the learning-state adapter is unavailable.
 
 Coupon controls do not form part of the reward model. Minimum lift, confidence,
@@ -85,11 +86,17 @@ making an unsafe coupon eligible.
 parses Kafka values through an explicit schema, converts the supplied ISO-8601
 time for event-time processing, applies a watermark, and configures the query's
 checkpoint directory. `AdaptiveForeachBatch` is the tested boundary that
-validates rows and normalizes catalog IDs before updating live features. The reference in-memory store is
-suitable for deterministic coursework replay; separately deployed application
-and Spark processes need a shared durable adapter for production use.
+validates rows and normalizes catalog IDs before updating live features. The
+in-memory store supports deterministic coursework replay. The Redis adapter
+shares features, impressions, LinUCB matrices, decision sequencing, and event
+claims across Flask and Spark processes; its cross-instance test proves stream
+feedback changes a later marketplace-worker ranking.
 
 Coupon output events add `coupon_id`, `discount_percent`, `supporting_cart_item`, `lift`, `confidence`, `support`, and a `reason` object containing the dwell threshold and observed dwell time.
+
+Issued coupon records have unique event-derived IDs, seven-day retention, and
+an atomic one-order claim. Repeating the same order ID is recoverable; a second
+order cannot reuse the coupon, and the explicit demo reset clears the ledger.
 
 The clickstream topic is partitioned by `user_id` so all state-mutating events for one shopper are ordered within a partition.
 

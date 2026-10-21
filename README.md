@@ -10,7 +10,7 @@ This repository is evolving from a Flask market-basket demo into a hybrid batch 
 - `bash scripts/run_demo.sh` — finite three-event terminal demonstration; exits on its own.
 - `uv run --no-sync flask --app app.main run` — marketplace and Signal Room only; live infrastructure must already be running for streaming events.
 - `uv run --no-sync python -m pipeline.adaptive_replay` — deterministic proof that rewarded live feedback changes the next recommendation ranking.
-- `uv run --no-sync python -m pipeline.adaptive_streaming --checkpoint-location .runtime/checkpoints/adaptive-features` — Spark Structured Streaming feature updater (requires PySpark and the Kafka connector at runtime).
+- `uv run --no-sync python -m pipeline.adaptive_streaming --checkpoint-location .runtime/checkpoints/adaptive-features` — Spark Structured Streaming feature updater; it and Flask share Redis adaptive state when `ADAPTIVE_REDIS_URL` is set.
 - `./scripts/verify_final_deliverables.sh` — install the core project, run the full test suite and adaptive replay, and syntax-check every storefront script. Set `RUN_SPARK_ACCEPTANCE=1` to include the Docker Spark artifact seam.
 
 The heavyweight GPU semantic-clustering dependencies are intentionally outside
@@ -164,8 +164,9 @@ shopper, product-response, and cart-pair features. A deterministic LinUCB policy
 learns only after feedback can be matched to an already-recorded impression.
 
 The supported feedback events are recommendation clicks, cart additions and
-removals, coupon applications, and completed checkouts. The latest 50,000
-successfully applied event IDs do not train twice. Coupon quality,
+removals, coupon applications, and completed checkouts. Local replay retains
+the latest 50,000 event IDs; the live Redis adapter uses a 24-hour deduplication
+window. Coupon quality,
 supporting-cart, already-in-cart, and frequency
 rules run before the bandit and cannot be overridden by a learned score. If the
 learning-state adapter is unavailable, candidates remain usable in historical
@@ -185,8 +186,7 @@ The Spark entry point parses Kafka JSON with an explicit schema, derives an
 event-time timestamp, applies a configurable watermark, and requires a durable
 checkpoint location. PySpark is deliberately imported only by the streaming
 entry point, so routine Flask startup and unit tests do not require Spark. The
-current reference adaptive store is process-local; a production deployment
-must replace it with a shared durable state adapter before independently scaled
-Flask and Spark processes can share learning state. Browser events retain
-display names but are normalized to numeric catalog IDs before adaptive state
-is updated.
+live launcher configures Flask to use the shared Redis feature, impression,
+LinUCB, sequence, and event-deduplication adapters. A separately deployed Spark
+worker uses the same namespace. Browser events retain display names but are
+normalized to numeric catalog IDs before shared adaptive state is updated.
