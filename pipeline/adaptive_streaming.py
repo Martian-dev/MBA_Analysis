@@ -86,7 +86,9 @@ def _canonical_adaptive_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
 def consume_with(service: AdaptiveRankingService) -> EventConsumer:
     def consume(payload: dict[str, Any], batch_id: int) -> None:
         del batch_id
-        service.observe_event(payload)
+        result = service.observe_event(payload)
+        if result.status == "state_unavailable":
+            raise RuntimeError("adaptive state unavailable; retry the micro-batch")
 
     return consume
 
@@ -155,20 +157,48 @@ def build_query(
         .option("startingOffsets", starting_offsets)
         .load()
     )
+    decoded = kafka.select(
+        functions.col("value").cast("string").alias("event_json"),
+        "topic",
+        "partition",
+        "offset",
+        functions.col("timestamp").alias("kafka_timestamp"),
+    )
     parsed = (
-        kafka.select(
+        decoded.select(
+            "*",
             functions.from_json(
-                functions.col("value").cast("string"), kafka_event_schema()
+                functions.col("event_json"), kafka_event_schema()
             ).alias("event")
         )
-        .select("event.*")
-        .withColumn("event_time_timestamp", functions.to_timestamp("event_time"))
-        .filter(functions.col("event_time_timestamp").isNotNull())
-        .withWatermark("event_time_timestamp", watermark)
-        .dropDuplicates(["event_id"])
+        .withColumn(
+            "event_time_timestamp", functions.to_timestamp("event.event_time")
+        )
+        .withColumn(
+            "stream_event_time",
+            functions.coalesce("event_time_timestamp", "kafka_timestamp"),
+        )
+        .withColumn(
+            "stream_dedup_id",
+            functions.coalesce(
+                functions.col("event.event_id"),
+                functions.concat_ws(":", "topic", "partition", "offset"),
+            ),
+        )
+    )
+    routed = (
+        parsed.select(
+            "event_json",
+            "event.*",
+            "event_time_timestamp",
+            "stream_event_time",
+            "stream_dedup_id",
+        )
+        .withWatermark("stream_event_time", watermark)
+        .dropDuplicates(["stream_dedup_id"])
     )
     return (
-        parsed.writeStream.outputMode("append")
+        routed.writeStream.outputMode("append")
         .option("checkpointLocation", checkpoint_location)
         .foreachBatch(foreach_batch)
         .start()

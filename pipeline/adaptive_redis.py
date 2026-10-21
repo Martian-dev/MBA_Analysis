@@ -10,7 +10,10 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+from contextlib import nullcontext
 from typing import Any, Mapping, Sequence
+
+from redis.exceptions import RedisError
 
 from .adaptive import (
     FEATURE_NAMES,
@@ -20,12 +23,14 @@ from .adaptive import (
     HistoricalCandidate,
     RankingDecision,
     RankingRequest,
+    RankedCandidate,
     _DisplayedCandidate,
     _RecordedImpression,
 )
 from .contracts import validate_event
 
 DEFAULT_ADAPTIVE_NAMESPACE = "mba:adaptive:v1"
+DEFAULT_STATE_TTL_SECONDS = 7 * 24 * 60 * 60
 
 
 def _text(value: Any) -> str | None:
@@ -58,18 +63,36 @@ def _matrix_vector(matrix: Sequence[Sequence[float]], vector: Sequence[float]) -
 class RedisFeatureStore:
     """Live feature counters shared across application and stream workers."""
 
-    def __init__(self, client: Any, namespace: str, *, session_ttl_seconds: int = 86_400) -> None:
+    def __init__(
+        self,
+        client: Any,
+        namespace: str,
+        *,
+        writer: Any | None = None,
+        session_ttl_seconds: int = 86_400,
+        state_ttl_seconds: int = DEFAULT_STATE_TTL_SECONDS,
+    ) -> None:
         self.client = client
+        self.writer = writer if writer is not None else client
         self.namespace = namespace
         self.session_ttl_seconds = session_ttl_seconds
+        self.state_ttl_seconds = state_ttl_seconds
         self._session = f"{namespace}:features:session-product"
         self._shopper = f"{namespace}:features:shopper-product"
         self._positive = f"{namespace}:features:product-positive"
         self._impressions = f"{namespace}:features:product-impressions"
         self._pairs = f"{namespace}:features:product-pairs"
 
-    def _number(self, key: str, field: str) -> float:
-        return float(_text(self.client.hget(key, field)) or 0.0)
+    def _value_key(self, scope: str, field: str) -> str:
+        return f"{scope}:{_digest(field)}"
+
+    def _number(self, scope: str, field: str) -> float:
+        return float(_text(self.client.get(self._value_key(scope, field))) or 0.0)
+
+    def _increment(self, scope: str, field: str, amount: float) -> None:
+        key = self._value_key(scope, field)
+        self.writer.incrbyfloat(key, amount)
+        self.writer.expire(key, self.state_ttl_seconds)
 
     def _cart_key(self, user_id: str, session_id: str) -> str:
         return f"{self.namespace}:cart:{_digest(user_id, session_id)}"
@@ -120,45 +143,43 @@ class RedisFeatureStore:
         session_id = str(event["session_id"])
         product_id = str(event["product_id"]) if event.get("product_id") else None
         if event_type == "recommendation_impression" and product_id:
-            self.client.hincrbyfloat(self._impressions, product_id, 1)
+            self._increment(self._impressions, product_id, 1)
         elif event_type == "product_view_ended" and product_id:
             self._adjust(user_id, session_id, product_id, 0.25)
         elif event_type == "recommendation_clicked" and product_id:
             self._adjust(user_id, session_id, product_id, 1.0)
-            self.client.hincrbyfloat(self._positive, product_id, 0.5)
+            self._increment(self._positive, product_id, 0.5)
         elif event_type == "cart_item_added" and product_id:
             cart_key = self._cart_key(user_id, session_id)
             for cart_item in self._cart(user_id, session_id):
                 pair = _field(*sorted((cart_item, product_id)))
-                self.client.hincrbyfloat(self._pairs, pair, 1.0)
-            self.client.sadd(cart_key, product_id)
-            self.client.expire(cart_key, self.session_ttl_seconds)
+                self._increment(self._pairs, pair, 1.0)
+            self.writer.sadd(cart_key, product_id)
+            self.writer.expire(cart_key, self.session_ttl_seconds)
             self._adjust(user_id, session_id, product_id, 2.0)
-            self.client.hincrbyfloat(self._positive, product_id, 1.0)
+            self._increment(self._positive, product_id, 1.0)
         elif event_type == "cart_item_removed" and product_id:
-            self.client.srem(self._cart_key(user_id, session_id), product_id)
+            self.writer.srem(self._cart_key(user_id, session_id), product_id)
             self._adjust(user_id, session_id, product_id, -1.5)
         elif event_type == "coupon_applied" and product_id:
             self._adjust(user_id, session_id, product_id, 1.5)
-            self.client.hincrbyfloat(self._positive, product_id, 0.75)
+            self._increment(self._positive, product_id, 0.75)
         elif event_type == "checkout_completed":
             product_ids = [str(item) for item in event.get("product_ids", [])]
             for item in product_ids:
                 self._adjust(user_id, session_id, item, 2.0)
-                self.client.hincrbyfloat(self._positive, item, 1.0)
+                self._increment(self._positive, item, 1.0)
             for index, left in enumerate(product_ids):
                 for right in product_ids[index + 1 :]:
-                    self.client.hincrbyfloat(
-                        self._pairs, _field(*sorted((left, right))), 1.0
-                    )
+                    self._increment(self._pairs, _field(*sorted((left, right))), 1.0)
 
     def _adjust(
         self, user_id: str, session_id: str, product_id: str, amount: float
     ) -> None:
-        self.client.hincrbyfloat(
+        self._increment(
             self._session, _field(user_id, session_id, product_id), amount
         )
-        self.client.hincrbyfloat(self._shopper, _field(user_id, product_id), amount)
+        self._increment(self._shopper, _field(user_id, product_id), amount)
 
 
 class RedisImpressionStore:
@@ -237,10 +258,19 @@ class RedisImpressionStore:
 class RedisLinUCBState:
     """Disjoint LinUCB matrices persisted per product in Redis."""
 
-    def __init__(self, client: Any, namespace: str) -> None:
+    def __init__(
+        self,
+        client: Any,
+        namespace: str,
+        *,
+        writer: Any | None = None,
+        state_ttl_seconds: int = DEFAULT_STATE_TTL_SECONDS,
+    ) -> None:
         self.client = client
+        self.writer = writer if writer is not None else client
         self.namespace = namespace
         self.dimensions = len(FEATURE_NAMES)
+        self.state_ttl_seconds = state_ttl_seconds
         self._updates_key = f"{namespace}:bandit:updates"
 
     def _state_key(self, product_id: str) -> str:
@@ -281,13 +311,21 @@ class RedisLinUCBState:
     ) -> None:
         """Apply one feedback event under a shared lock before claiming it done."""
 
-        with self.client.lock(
-            f"{self.namespace}:bandit:update-lock", timeout=10, blocking_timeout=5
-        ):
+        lock = (
+            self.client.lock(
+                f"{self.namespace}:feedback-commit-lock",
+                timeout=30,
+                blocking_timeout=5,
+            )
+            if self.writer is self.client
+            else nullcontext()
+        )
+        with lock:
             for product_id, features, reward in updates:
                 self._update_unlocked(product_id, features, reward)
             for _ in updates:
-                self.client.incr(self._updates_key)
+                self.writer.incr(self._updates_key)
+            self.writer.expire(self._updates_key, self.state_ttl_seconds)
 
     def _update_unlocked(
         self, product_id: str, features: Sequence[float], reward: float
@@ -303,7 +341,11 @@ class RedisLinUCBState:
                     projected[row] * projected[column] / denominator
                 )
             state["reward_vector"][row] += reward * features[row]
-        self.client.set(state_key, json.dumps(state, separators=(",", ":")))
+        self.writer.set(
+            state_key,
+            json.dumps(state, separators=(",", ":")),
+            ex=self.state_ttl_seconds,
+        )
 
 
 class RedisAdaptiveRankingService(AdaptiveRankingService):
@@ -316,14 +358,20 @@ class RedisAdaptiveRankingService(AdaptiveRankingService):
         namespace: str = DEFAULT_ADAPTIVE_NAMESPACE,
         impression_ttl_seconds: int = 86_400,
         dedup_ttl_seconds: int = 86_400,
+        state_ttl_seconds: int = DEFAULT_STATE_TTL_SECONDS,
         **options: Any,
     ) -> None:
         self.redis_client = client
         self.namespace = namespace.rstrip(":")
         self.dedup_ttl_seconds = dedup_ttl_seconds
+        self.state_ttl_seconds = state_ttl_seconds
         super().__init__(
-            features=RedisFeatureStore(client, self.namespace),
-            bandit_state=RedisLinUCBState(client, self.namespace),
+            features=RedisFeatureStore(
+                client, self.namespace, state_ttl_seconds=state_ttl_seconds
+            ),
+            bandit_state=RedisLinUCBState(
+                client, self.namespace, state_ttl_seconds=state_ttl_seconds
+            ),
             impressions=RedisImpressionStore(
                 client, self.namespace, ttl_seconds=impression_ttl_seconds
             ),
@@ -333,29 +381,101 @@ class RedisAdaptiveRankingService(AdaptiveRankingService):
     def rank(
         self, request: RankingRequest, snapshot: CandidateSnapshot
     ) -> RankingDecision:
-        sequence = int(self.redis_client.incr(f"{self.namespace}:decision-sequence"))
-        self._decision_sequence = sequence - 1
-        return super().rank(request, snapshot)
+        try:
+            sequence = int(self.redis_client.incr(f"{self.namespace}:decision-sequence"))
+            self._decision_sequence = sequence - 1
+            return super().rank(request, snapshot)
+        except RedisError:
+            return self._historical_fallback(request, snapshot)
+
+    def _historical_fallback(
+        self, request: RankingRequest, snapshot: CandidateSnapshot
+    ) -> RankingDecision:
+        """Return a safe decision without touching unavailable Redis state."""
+        scored: list[tuple[HistoricalCandidate, float]] = []
+        suppressions: dict[str, str] = {}
+        for candidate in snapshot.candidates:
+            reason = self.guardrails.suppression_reason(request, candidate)
+            if reason:
+                suppressions[candidate.product_id] = reason
+            else:
+                scored.append((candidate, self.historical_weight * candidate.prior_score))
+        scored.sort(key=lambda item: (-item[1], item[0].product_id))
+        selected = scored[: request.limit]
+        self._decision_sequence += 1
+        return RankingDecision(
+            impression_id=f"historical-fallback-unavailable-{self._decision_sequence:08d}",
+            snapshot_version=snapshot.version,
+            user_id=request.user_id,
+            session_id=request.session_id,
+            policy_mode="historical_fallback",
+            items=tuple(
+                RankedCandidate(
+                    product_id=candidate.product_id,
+                    score=round(score, 8),
+                    offer_type=candidate.offer_type,
+                    explanation={
+                        "historical_prior": score,
+                        "learned_estimate": 0.0,
+                        "exploration_bonus": 0.0,
+                        "fallback_reason": "shared_state_unavailable",
+                    },
+                )
+                for candidate, score in selected
+            ),
+            suppressions=suppressions,
+        )
 
     def consume_feedback(self, event: dict[str, Any]) -> FeedbackResult:
         event = validate_event(event)
         event_id = event["event_id"]
         dedup_key = f"{self.namespace}:event:{_digest(event_id)}"
-        claimed = self.redis_client.set(
-            dedup_key, "applied", nx=True, ex=self.dedup_ttl_seconds
-        )
-        if not claimed:
-            return FeedbackResult("duplicate_event")
         try:
-            result = super().consume_feedback(event)
+            with self.redis_client.lock(
+                f"{self.namespace}:feedback-commit-lock",
+                timeout=30,
+                blocking_timeout=5,
+            ):
+                if self.redis_client.get(dedup_key) is not None:
+                    return FeedbackResult("duplicate_event")
+
+                transaction = self.redis_client.pipeline(transaction=True)
+                original_features = self.features
+                original_bandit = self.bandit_state
+                self.features = RedisFeatureStore(
+                    self.redis_client,
+                    self.namespace,
+                    writer=transaction,
+                    state_ttl_seconds=self.state_ttl_seconds,
+                )
+                self.bandit_state = RedisLinUCBState(
+                    self.redis_client,
+                    self.namespace,
+                    writer=transaction,
+                    state_ttl_seconds=self.state_ttl_seconds,
+                )
+                # The distributed claim is authoritative; the base class's local
+                # cache must not extend the configured Redis retention window.
+                self._processed_events.pop(event_id, None)
+                try:
+                    result = super().consume_feedback(event)
+                finally:
+                    self.features = original_features
+                    self.bandit_state = original_bandit
+                if result.status == "state_unavailable":
+                    self._processed_events.pop(event_id, None)
+                    return result
+                transaction.set(
+                    dedup_key, "applied", ex=self.dedup_ttl_seconds
+                )
+                transaction.execute()
+                return result
+        except RedisError:
+            self._processed_events.pop(event_id, None)
+            return FeedbackResult("state_unavailable")
         except Exception:
-            self.redis_client.delete(dedup_key)
             self._processed_events.pop(event_id, None)
             raise
-        if result.status == "state_unavailable":
-            self.redis_client.delete(dedup_key)
-            self._processed_events.pop(event_id, None)
-        return result
 
 
 def create_redis_adaptive_service(

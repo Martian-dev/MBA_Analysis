@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import threading
+from redis.exceptions import ConnectionError as RedisConnectionError
 
 from pipeline.adaptive_redis import create_redis_adaptive_service
 from pipeline.adaptive_streaming import AdaptiveForeachBatch, consume_with
@@ -18,6 +19,53 @@ class _Lock:
         self.lock.release()
 
 
+class MemoryPipeline:
+    def __init__(self, client) -> None:
+        self.client = client
+        self.operations = []
+
+    def set(self, key, value, *, nx=False, ex=None):
+        self.operations.append(("set", key, value, nx, ex))
+        return self
+
+    def incr(self, key):
+        self.operations.append(("incr", key))
+        return self
+
+    def incrbyfloat(self, key, amount):
+        self.operations.append(("incrbyfloat", key, amount))
+        return self
+
+    def sadd(self, key, *values):
+        self.operations.append(("sadd", key, values))
+        return self
+
+    def srem(self, key, *values):
+        self.operations.append(("srem", key, values))
+        return self
+
+    def expire(self, key, seconds):
+        self.operations.append(("expire", key, seconds))
+        return self
+
+    def execute(self):
+        with self.client._mutex:
+            if self.client.fail_next_transaction:
+                self.client.fail_next_transaction = False
+                raise RedisConnectionError("transaction interrupted before commit")
+            results = []
+            for operation in self.operations:
+                method = getattr(self.client, operation[0])
+                if operation[0] == "set":
+                    _, key, value, nx, ex = operation
+                    results.append(method(key, value, nx=nx, ex=ex))
+                elif operation[0] in {"sadd", "srem"}:
+                    results.append(method(operation[1], *operation[2]))
+                else:
+                    results.append(method(*operation[1:]))
+            return results
+
+
 class MemoryRedis:
     """Small shared Redis test double covering the adapter's public commands."""
 
@@ -25,6 +73,8 @@ class MemoryRedis:
         self.values: dict[str, str] = {}
         self.hashes: dict[str, dict[str, str]] = {}
         self.sets: dict[str, set[str]] = {}
+        self.expirations: dict[str, int] = {}
+        self.fail_next_transaction = False
         self._mutex = threading.RLock()
         self._locks: dict[str, threading.RLock] = {}
 
@@ -33,11 +83,12 @@ class MemoryRedis:
             return self.values.get(key)
 
     def set(self, key, value, *, nx=False, ex=None):
-        del ex
         with self._mutex:
             if nx and key in self.values:
                 return False
             self.values[key] = str(value)
+            if ex is not None:
+                self.expirations[key] = int(ex)
             return True
 
     def delete(self, *keys):
@@ -46,10 +97,17 @@ class MemoryRedis:
                 self.values.pop(key, None)
                 self.hashes.pop(key, None)
                 self.sets.pop(key, None)
+                self.expirations.pop(key, None)
 
     def incr(self, key):
         with self._mutex:
             value = int(self.values.get(key, "0")) + 1
+            self.values[key] = str(value)
+            return value
+
+    def incrbyfloat(self, key, amount):
+        with self._mutex:
+            value = float(self.values.get(key, "0")) + float(amount)
             self.values[key] = str(value)
             return value
 
@@ -85,8 +143,12 @@ class MemoryRedis:
             self.sets.setdefault(key, set()).difference_update(str(value) for value in values)
 
     def expire(self, key, seconds):
-        del key, seconds
+        self.expirations[key] = int(seconds)
         return True
+
+    def pipeline(self, transaction=True):
+        assert transaction is True
+        return MemoryPipeline(self)
 
     def lock(self, name, **options):
         del options
@@ -158,3 +220,120 @@ def test_foreach_batch_feedback_changes_ranking_in_another_service_instance():
 
     duplicate = serving.observe_event({**event, "product_id": "202"})
     assert duplicate.status == "duplicate_event"
+
+
+def test_unavailable_shared_state_returns_public_historical_fallback():
+    class UnavailableRedis:
+        def incr(self, key):
+            del key
+            raise RedisConnectionError("redis offline")
+
+    service = create_redis_adaptive_service(
+        UnavailableRedis(), alpha=0.05, historical_weight=0.25
+    )
+
+    decision = service.rank_candidates(
+        user_id="shopper-offline",
+        session_id="session-offline",
+        candidates=[
+            {"product_id": "low", "prior_score": 0.2},
+            {"product_id": "high", "prior_score": 0.9},
+        ],
+        snapshot_version="spark-v1",
+        limit=2,
+    )
+
+    assert decision["policy_mode"] == "historical_fallback"
+    assert [item["product_id"] for item in decision["items"]] == ["high", "low"]
+    assert (
+        decision["items"][0]["explanation"]["fallback_reason"]
+        == "shared_state_unavailable"
+    )
+
+
+def test_feedback_transaction_is_retryable_without_partial_updates():
+    redis = MemoryRedis()
+    service = create_redis_adaptive_service(
+        redis, namespace="atomic-test", alpha=0.05, historical_weight=0.25
+    )
+    candidates = [
+        {"product_id": "101", "prior_score": 0.9},
+        {"product_id": "202", "prior_score": 0.8},
+    ]
+    first = service.rank_candidates(
+        user_id="shopper-1",
+        session_id="session-1",
+        candidates=candidates,
+        snapshot_version="spark-v1",
+        limit=2,
+    )
+    feedback = {
+        "event_id": "atomic-click",
+        "event_type": "recommendation_clicked",
+        "event_time": "2026-10-21T12:00:00+00:00",
+        "user_id": "shopper-1",
+        "session_id": "session-1",
+        "product_id": "202",
+        "impression_id": first["impression_id"],
+    }
+
+    redis.fail_next_transaction = True
+    assert service.observe_event(feedback).status == "state_unavailable"
+    after_failure = service.rank_candidates(
+        user_id="shopper-1",
+        session_id="session-1",
+        candidates=candidates,
+        snapshot_version="spark-v1",
+        limit=2,
+    )
+    assert after_failure["policy_mode"] == "historical_cold_start"
+    failed_features = after_failure["items"][1]["explanation"]["live_features"]
+    assert failed_features["session_product_interest"] == 0
+
+    assert service.observe_event(feedback).status == "learned"
+    assert service.observe_event(feedback).status == "duplicate_event"
+    after_retry = service.rank_candidates(
+        user_id="shopper-1",
+        session_id="session-1",
+        candidates=candidates,
+        snapshot_version="spark-v1",
+        limit=2,
+    )
+    retried_features = after_retry["items"][0]["explanation"]["live_features"]
+    assert retried_features["session_product_interest"] == 0.25
+
+
+def test_shared_feature_and_bandit_state_have_explicit_retention():
+    redis = MemoryRedis()
+    service = create_redis_adaptive_service(
+        redis,
+        namespace="retention-test",
+        state_ttl_seconds=60,
+        alpha=0.05,
+        historical_weight=0.25,
+    )
+    candidates = [{"product_id": "202", "prior_score": 0.8}]
+    decision = service.rank_candidates(
+        user_id="shopper-1",
+        session_id="session-1",
+        candidates=candidates,
+        snapshot_version="spark-v1",
+    )
+    feedback = {
+        "event_id": "retained-click",
+        "event_type": "recommendation_clicked",
+        "event_time": "2026-10-21T12:00:00+00:00",
+        "user_id": "shopper-1",
+        "session_id": "session-1",
+        "product_id": "202",
+        "impression_id": decision["impression_id"],
+    }
+
+    assert service.observe_event(feedback).status == "learned"
+    retained_keys = [
+        key
+        for key in redis.values
+        if ":features:" in key or ":bandit:" in key
+    ]
+    assert retained_keys
+    assert {redis.expirations[key] for key in retained_keys} == {60}

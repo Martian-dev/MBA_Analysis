@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from pipeline.adaptive import create_adaptive_service
+from pipeline.adaptive import FeedbackResult, create_adaptive_service
 from pipeline.adaptive_streaming import AdaptiveForeachBatch, consume_with
 
 
@@ -139,3 +139,42 @@ def test_foreach_batch_rejects_poison_row_and_continues_valid_events():
     assert boundary.rejected_count == 1
     assert rejected[0][0] == {"event_json": "not-json"}
     assert rejected[0][1] == 9
+
+
+def test_foreach_batch_rejects_invalid_timestamp_from_raw_spark_row():
+    rejected = []
+    boundary = AdaptiveForeachBatch(
+        lambda payload, batch_id: None,
+        lambda values, batch_id, error: rejected.append((values, batch_id, error)),
+    )
+    payload = {
+        "event_id": "bad-time",
+        "event_type": "search_performed",
+        "event_time": "not-a-timestamp",
+        "user_id": "shopper-1",
+        "session_id": "session-1",
+        "query": "berries",
+    }
+
+    boundary(
+        FakeBatch(
+            [FakeRow({"event_json": json.dumps(payload), "event_time_timestamp": None})]
+        ),
+        11,
+    )
+
+    assert rejected[0][0]["event_json"] == json.dumps(payload)
+    assert rejected[0][1] == 11
+    assert "ISO-8601" in rejected[0][2]
+
+
+def test_stream_consumer_retries_when_shared_state_is_unavailable():
+    class UnavailableService:
+        def observe_event(self, payload):
+            del payload
+            return FeedbackResult("state_unavailable")
+
+    consume = consume_with(UnavailableService())
+
+    with pytest.raises(RuntimeError, match="adaptive state unavailable"):
+        consume({"event_id": "retry-me"}, 12)
