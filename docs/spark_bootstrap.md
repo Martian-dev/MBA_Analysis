@@ -100,4 +100,3 @@ The fixture yields five baskets, two one-item directional rules, and a trained
 ALS export. `tests/test_spark_bootstrap_cli.py` verifies those results solely
 through the CLI and generated artifacts; it skips when Java/PySpark are not
 installed in the host test environment.
-

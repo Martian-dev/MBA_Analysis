@@ -279,4 +279,3 @@ def test_client_impressions_drive_the_live_product_response_feature():
     second = service.rank(RankingRequest("shopper-1", "session-1"), snapshot)
 
     assert second.items[0].explanation["live_features"]["product_response_rate"] == 0.25
-

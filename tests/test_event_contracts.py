@@ -57,4 +57,3 @@ def test_coupon_engine_ignores_supported_non_policy_events():
     )
     assert decision is None
     assert reason == "ignored"
-

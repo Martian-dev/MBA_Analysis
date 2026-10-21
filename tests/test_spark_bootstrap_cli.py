@@ -120,4 +120,3 @@ def test_batch_cli_publishes_validated_versioned_artifacts(tmp_path: Path):
         "run_id",
     }
     assert {row["run_id"] for row in serving_rules} == {"fixture-run"}
-
