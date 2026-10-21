@@ -13,14 +13,16 @@ dependencies = [
     "nltk>=3.8.1",
     "kafka-python>=2.2.15",
     "redis>=5.2.1",
-    "sentence-transformers>=6.1.0",
-    "torch>=2.6.0",
 ]
 
 [dependency-groups]
 dev = [
     "ipykernel>=6.25.0",
     "pytest>=8.0.0",
+]
+semantic = [
+    "sentence-transformers>=6.1.0",
+    "torch>=2.6.0,<2.7",
 ]
 
 [tool.pytest.ini_options]

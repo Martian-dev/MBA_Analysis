@@ -1,0 +1,56 @@
+{
+  "run_id": "final-bounded-real-20261021",
+  "status": "succeeded",
+  "schema_version": "1.0",
+  "spark": {
+    "version": "4.0.1",
+    "master": "local[*]"
+  },
+  "parameters": {
+    "mode": "sample",
+    "sample_orders": 1000,
+    "min_support": 0.005,
+    "min_confidence": 0.05,
+    "num_partitions": 2,
+    "als_rank": 8,
+    "als_max_iter": 3,
+    "als_top_k": 10,
+    "als_seed": 42
+  },
+  "source_sizes_bytes": {
+    "aisles": 2603,
+    "departments": 270,
+    "order_products_prior": 577550706,
+    "order_products_train": 24680147,
+    "orders": 108968645,
+    "products": 2166953
+  },
+  "counts": {
+    "selected_orders": 1000,
+    "baskets": 978,
+    "transactions": 9963,
+    "products": 49688,
+    "all_association_rules": 298,
+    "one_item_directional_rules": 286
+  },
+  "als": {
+    "status": "trained",
+    "users": 973,
+    "products": 4517,
+    "interactions": 9950,
+    "exported_candidates": 9730
+  },
+  "validation": {
+    "passed": true,
+    "violation_count": 0,
+    "duplicate_rows": 0,
+    "foreign_key_violations": 0,
+    "invalid_identifiers": 0,
+    "null_required_fields": 0,
+    "domain_violations": 0
+  },
+  "duration_seconds": 39.564,
+  "started_at": "2026-10-21T15:29:26.193794+00:00",
+  "finished_at": "2026-10-21T15:30:05.753516+00:00",
+  "artifact_note": "This committed evidence summary was derived from the generated manifest. Re-run the documented command to regenerate Parquet, JSON, serving CSV, validation, and full manifest artifacts."
+}

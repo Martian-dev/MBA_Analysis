@@ -11,6 +11,14 @@ This repository is evolving from a Flask market-basket demo into a hybrid batch 
 - `uv run --no-sync flask --app app.main run` — marketplace and Signal Room only; live infrastructure must already be running for streaming events.
 - `uv run --no-sync python -m pipeline.adaptive_replay` — deterministic proof that rewarded live feedback changes the next recommendation ranking.
 - `uv run --no-sync python -m pipeline.adaptive_streaming --checkpoint-location .runtime/checkpoints/adaptive-features` — Spark Structured Streaming feature updater (requires PySpark and the Kafka connector at runtime).
+- `./scripts/verify_final_deliverables.sh` — install the core project, run the full test suite and adaptive replay, and syntax-check every storefront script. Set `RUN_SPARK_ACCEPTANCE=1` to include the Docker Spark artifact seam.
+
+The heavyweight GPU semantic-clustering dependencies are intentionally outside
+the core marketplace environment. Install them only for the clustering
+notebook with `uv sync --group semantic`. Spark uses its pinned Docker runner;
+see [`docs/spark_bootstrap.md`](docs/spark_bootstrap.md). Measured final-run
+results are recorded in
+[`docs/final-implementation-evidence.md`](docs/final-implementation-evidence.md).
 
 ## Browse the grocery marketplace
 
