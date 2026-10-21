@@ -114,6 +114,7 @@ class BootstrapConfig:
     min_support: float
     min_confidence: float
     num_partitions: int
+    spark_master: str
     validation_policy: str
     skip_als: bool
     als_rank: int
@@ -186,7 +187,9 @@ def _condition_count(frame: DataFrame, condition: Any) -> int:
     return frame.where(condition).count()
 
 
-def _validate(tables: dict[str, DataFrame]) -> dict[str, Any]:
+def _validate(
+    tables: dict[str, DataFrame], source_tables: dict[str, DataFrame]
+) -> dict[str, Any]:
     row_counts = {name: frame.count() for name, frame in tables.items()}
     nulls: dict[str, dict[str, int]] = {}
     invalid_identifiers: dict[str, dict[str, int]] = {}
@@ -227,15 +230,31 @@ def _validate(tables: dict[str, DataFrame]) -> dict[str, Any]:
     prior = tables["order_products_prior"]
     train = tables["order_products_train"]
 
+    source_orders = source_tables["orders"]
+    source_products = source_tables["products"]
+    source_aisles = source_tables["aisles"]
+    source_departments = source_tables["departments"]
+    source_prior = source_tables["order_products_prior"]
+    source_train = source_tables["order_products_train"]
     foreign_keys = {
-        "products_to_aisles": products.join(aisles.select("aisle_id"), "aisle_id", "left_anti").count(),
-        "products_to_departments": products.join(
-            departments.select("department_id"), "department_id", "left_anti"
+        "products_to_aisles": source_products.join(
+            source_aisles.select("aisle_id"), "aisle_id", "left_anti"
         ).count(),
-        "prior_to_orders": prior.join(orders.select("order_id"), "order_id", "left_anti").count(),
-        "prior_to_products": prior.join(products.select("product_id"), "product_id", "left_anti").count(),
-        "train_to_orders": train.join(orders.select("order_id"), "order_id", "left_anti").count(),
-        "train_to_products": train.join(products.select("product_id"), "product_id", "left_anti").count(),
+        "products_to_departments": source_products.join(
+            source_departments.select("department_id"), "department_id", "left_anti"
+        ).count(),
+        "prior_to_orders": source_prior.join(
+            source_orders.select("order_id"), "order_id", "left_anti"
+        ).count(),
+        "prior_to_products": source_prior.join(
+            source_products.select("product_id"), "product_id", "left_anti"
+        ).count(),
+        "train_to_orders": source_train.join(
+            source_orders.select("order_id"), "order_id", "left_anti"
+        ).count(),
+        "train_to_products": source_train.join(
+            source_products.select("product_id"), "product_id", "left_anti"
+        ).count(),
     }
     domains = {
         "orders.invalid_eval_set": _condition_count(
@@ -275,7 +294,10 @@ def _validate(tables: dict[str, DataFrame]) -> dict[str, Any]:
     return {
         "passed": violation_count == 0,
         "violation_count": int(violation_count),
-        "scope": "selected slice in sample mode; all rows in full mode",
+        "scope": (
+            "foreign-key coverage is source-wide; other fact and order checks use the "
+            "selected slice in sample mode and all rows in full mode"
+        ),
         "row_counts": row_counts,
         "null_required_fields": nulls,
         "invalid_identifiers": invalid_identifiers,
@@ -445,6 +467,19 @@ def _write_frame(frame: DataFrame, path: Path, output_format: str, partitions: i
     writer_frame.write.mode("errorifexists").format(output_format).save(str(path))
 
 
+def _write_artifact_pair(
+    frame: DataFrame, run_dir: Path, artifact_name: str, partitions: int
+) -> dict[str, str]:
+    parquet = run_dir / f"{artifact_name}.parquet"
+    json_output = run_dir / f"{artifact_name}.json"
+    _write_frame(frame, parquet, "parquet", partitions)
+    _write_frame(frame, json_output, "json", 1)
+    return {
+        f"{artifact_name}_parquet": parquet.name,
+        f"{artifact_name}_json": json_output.name,
+    }
+
+
 def _write_serving_csv(rules: DataFrame, path: Path) -> None:
     """Write one loadable CSV file rather than a Spark part-file directory."""
 
@@ -483,7 +518,7 @@ def run(config: BootstrapConfig) -> Path:
 
     spark = (
         SparkSession.builder.appName(f"mba-historical-bootstrap-{config.run_id}")
-        .master("local[*]" if config.mode == "sample" else "local[*]")
+        .master(config.spark_master)
         .config("spark.sql.shuffle.partitions", str(config.num_partitions))
         .config("spark.ui.enabled", "false")
         .getOrCreate()
@@ -502,14 +537,16 @@ def run(config: BootstrapConfig) -> Path:
             "master": spark.sparkContext.master,
         },
         "outputs": {},
+        "output_base": "manifest_directory",
     }
     try:
-        tables = _bounded_tables(_read_tables(spark, input_dir), config)
-        validation = _validate(tables)
+        source_tables = _read_tables(spark, input_dir)
+        tables = _bounded_tables(source_tables, config)
+        validation = _validate(tables, source_tables)
         manifest["validation"] = validation
         validation_path = run_dir / "validation.json"
         _write_json(validation_path, validation)
-        manifest["outputs"]["validation_json"] = str(validation_path)
+        manifest["outputs"]["validation_json"] = validation_path.name
         if not validation["passed"] and config.validation_policy == "fail":
             manifest["status"] = "validation_failed"
             raise ValueError(
@@ -523,41 +560,25 @@ def run(config: BootstrapConfig) -> Path:
         if basket_count == 0:
             raise ValueError("No non-empty order baskets were available for FP-Growth")
 
-        baskets_parquet = run_dir / "baskets.parquet"
-        baskets_json = run_dir / "baskets.json"
-        _write_frame(baskets, baskets_parquet, "parquet", config.num_partitions)
-        _write_frame(baskets, baskets_json, "json", 1)
         manifest["outputs"].update(
-            {"baskets_parquet": str(baskets_parquet), "baskets_json": str(baskets_json)}
+            _write_artifact_pair(baskets, run_dir, "baskets", config.num_partitions)
         )
 
         rules, rule_counts = _mine_rules(baskets, tables["products"], config)
-        rules_parquet = run_dir / "rules.parquet"
-        rules_json = run_dir / "rules.json"
         rules_serving_csv = run_dir / "rules_serving.csv"
-        _write_frame(rules, rules_parquet, "parquet", config.num_partitions)
-        _write_frame(rules, rules_json, "json", 1)
-        _write_serving_csv(rules, rules_serving_csv)
         manifest["outputs"].update(
-            {
-                "rules_parquet": str(rules_parquet),
-                "rules_json": str(rules_json),
-                "rules_serving_csv": str(rules_serving_csv),
-            }
+            _write_artifact_pair(rules, run_dir, "rules", config.num_partitions)
         )
+        _write_serving_csv(rules, rules_serving_csv)
+        manifest["outputs"]["rules_serving_csv"] = rules_serving_csv.name
 
         candidates, als_status = _als_candidates(transactions, tables["products"], config)
         manifest["als"] = als_status
         if candidates is not None:
-            candidates_parquet = run_dir / "als_candidates.parquet"
-            candidates_json = run_dir / "als_candidates.json"
-            _write_frame(candidates, candidates_parquet, "parquet", config.num_partitions)
-            _write_frame(candidates, candidates_json, "json", 1)
             manifest["outputs"].update(
-                {
-                    "als_candidates_parquet": str(candidates_parquet),
-                    "als_candidates_json": str(candidates_json),
-                }
+                _write_artifact_pair(
+                    candidates, run_dir, "als_candidates", config.num_partitions
+                )
             )
 
         manifest["counts"] = {
@@ -593,6 +614,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--min-support", type=float, default=0.01)
     parser.add_argument("--min-confidence", type=float, default=0.1)
     parser.add_argument("--num-partitions", type=int, default=2)
+    parser.add_argument("--spark-master", default="local[*]")
     parser.add_argument("--validation-policy", choices=("fail", "warn"), default="fail")
     parser.add_argument("--skip-als", action="store_true")
     parser.add_argument("--als-rank", type=int, default=16)
@@ -628,6 +650,7 @@ def main(argv: list[str] | None = None) -> int:
         min_support=args.min_support,
         min_confidence=args.min_confidence,
         num_partitions=args.num_partitions,
+        spark_master=args.spark_master,
         validation_policy=args.validation_policy,
         skip_als=args.skip_als,
         als_rank=args.als_rank,

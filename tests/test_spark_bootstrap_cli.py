@@ -21,6 +21,10 @@ def _json_rows(path: Path) -> list[dict]:
     ]
 
 
+def _artifact(manifest_path: Path, manifest: dict, name: str) -> Path:
+    return manifest_path.parent / manifest["outputs"][name]
+
+
 @pytest.mark.skipif(
     (shutil.which("java") is None and not os.environ.get("JAVA_HOME"))
     or importlib.util.find_spec("pyspark") is None,
@@ -88,10 +92,11 @@ def test_batch_cli_publishes_validated_versioned_artifacts(tmp_path: Path):
     }
     assert all(source_info["size_bytes"] > 0 for source_info in manifest["sources"].values())
 
-    baskets = _json_rows(Path(manifest["outputs"]["baskets_json"]))
+    assert manifest["output_base"] == "manifest_directory"
+    baskets = _json_rows(_artifact(manifest_path, manifest, "baskets_json"))
     assert {tuple(row["items"]) for row in baskets} >= {(1, 2), (1, 3), (2, 4)}
 
-    rules = _json_rows(Path(manifest["outputs"]["rules_json"]))
+    rules = _json_rows(_artifact(manifest_path, manifest, "rules_json"))
     assert rules
     directed_pairs = [(row["antecedent_product_id"], row["consequent_product_id"]) for row in rules]
     assert len(directed_pairs) == len(set(directed_pairs))
@@ -99,9 +104,11 @@ def test_batch_cli_publishes_validated_versioned_artifacts(tmp_path: Path):
     assert all(row["antecedent"][0] != row["consequent"][0] for row in rules)
     assert all({"support", "confidence", "lift"} <= row.keys() for row in rules)
     assert manifest["als"]["status"] == "trained"
-    assert Path(manifest["outputs"]["als_candidates_parquet"]).is_dir()
-    assert Path(manifest["outputs"]["rules_parquet"]).is_dir()
-    with Path(manifest["outputs"]["rules_serving_csv"]).open(encoding="utf-8", newline="") as handle:
+    assert _artifact(manifest_path, manifest, "als_candidates_parquet").is_dir()
+    assert _artifact(manifest_path, manifest, "rules_parquet").is_dir()
+    with _artifact(manifest_path, manifest, "rules_serving_csv").open(
+        encoding="utf-8", newline=""
+    ) as handle:
         serving_rules = list(csv.DictReader(handle))
     assert serving_rules
     assert set(serving_rules[0]) == {

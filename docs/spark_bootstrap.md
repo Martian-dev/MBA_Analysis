@@ -50,9 +50,10 @@ The command refuses to overwrite an existing run directory. Outputs are under
 
 The manifest records source paths and byte sizes, every parameter, validation
 metrics, row/artifact counts, Spark metadata, UTC timestamps, duration, ALS
-status, and output locations. In sample mode, order and fact validations cover
-the selected order slice while dimension validation covers the full dimension
-tables. Full mode validates every row.
+status, and portable output locations relative to the manifest directory. In
+sample mode, foreign-key coverage spans every source row; other order and fact
+checks cover the selected slice while dimension validation covers the full
+dimension tables. Full mode validates every row for every check.
 
 ## Publish a mined rule snapshot
 
