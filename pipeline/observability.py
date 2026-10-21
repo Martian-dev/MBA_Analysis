@@ -10,6 +10,7 @@ from typing import Any
 STREAM_KEY = "mba:observer:activity:v1"
 COUNTS_KEY = "mba:observer:counts:v1"
 MAX_EVENTS = 1000
+COUPON_KEY_PREFIX = "mba:coupon:v1:"
 
 
 class ActivityLog:
@@ -63,3 +64,70 @@ class ActivityLog:
                     decoded = self._decode(row)
                     last_id = decoded["id"]
                     yield decoded
+
+
+class CouponLedger:
+    """Durable coupon authority with atomic, one-time redemption."""
+
+    _REDEEM_SCRIPT = """
+local redeemed = {}
+for index, key in ipairs(KEYS) do
+    if redis.call('EXISTS', key) == 1
+        and redis.call('HGET', key, 'user_id') == ARGV[1]
+        and redis.call('HGET', key, 'session_id') == ARGV[2]
+        and not redis.call('HGET', key, 'redeemed_order_id') then
+        redis.call('HSET', key, 'redeemed_order_id', ARGV[3], 'redeemed_at', ARGV[4])
+        table.insert(redeemed, ARGV[index + 4])
+    end
+end
+return redeemed
+"""
+
+    def __init__(self, client: Any):
+        self.client = client
+
+    @staticmethod
+    def _key(coupon_id: str) -> str:
+        return f"{COUPON_KEY_PREFIX}{coupon_id}"
+
+    def issue(self, coupon: dict[str, Any]) -> None:
+        fields = {
+            "coupon_id": str(coupon["coupon_id"]),
+            "user_id": str(coupon["user_id"]),
+            "session_id": str(coupon["session_id"]),
+            "product_id": str(coupon["product_id"]),
+            "discount_percent": str(coupon["discount_percent"]),
+            "issued_at": str(coupon["event_time"]),
+        }
+        self.client.hset(self._key(fields["coupon_id"]), mapping=fields)
+
+    def redeem(
+        self,
+        coupon_ids: list[str],
+        *,
+        user_id: str,
+        session_id: str,
+        order_id: str,
+    ) -> list[dict[str, str]]:
+        unique_ids = list(dict.fromkeys(coupon_ids))
+        if not unique_ids:
+            return []
+        redeemed_at = datetime.now(timezone.utc).isoformat()
+        redeemed_ids = self.client.eval(
+            self._REDEEM_SCRIPT,
+            len(unique_ids),
+            *(self._key(coupon_id) for coupon_id in unique_ids),
+            user_id,
+            session_id,
+            order_id,
+            redeemed_at,
+            *unique_ids,
+        )
+        normalized_ids = [
+            value.decode() if isinstance(value, bytes) else str(value)
+            for value in redeemed_ids
+        ]
+        pipe = self.client.pipeline()
+        for coupon_id in normalized_ids:
+            pipe.hgetall(self._key(coupon_id))
+        return [dict(record) for record in pipe.execute()]

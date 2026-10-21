@@ -10,6 +10,7 @@ import argparse
 import json
 import os
 from datetime import datetime
+from pathlib import Path
 from typing import Any, Callable, Mapping
 
 from .adaptive import AdaptiveRankingService, create_adaptive_service
@@ -18,26 +19,65 @@ from .topics import EVENTS_TOPIC
 
 
 EventConsumer = Callable[[dict[str, Any], int], Any]
+RejectedConsumer = Callable[[Mapping[str, Any], int, str], Any]
+
+
+class JsonlDeadLetterSink:
+    """Append rejected streaming rows without replaying a poison micro-batch."""
+
+    def __init__(self, path: str | Path) -> None:
+        self.path = Path(path)
+
+    def __call__(self, values: Mapping[str, Any], batch_id: int, error: str) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        record = {"batch_id": batch_id, "error": error, "row": dict(values)}
+        with self.path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, default=str, sort_keys=True) + "\n")
 
 
 class AdaptiveForeachBatch:
     """Testable driver-side boundary between Spark batches and live state."""
 
-    def __init__(self, consume: EventConsumer) -> None:
+    def __init__(
+        self,
+        consume: EventConsumer,
+        on_rejected: RejectedConsumer | None = None,
+    ) -> None:
         self.consume = consume
+        self.on_rejected = on_rejected
+        self.rejected_count = 0
 
     def __call__(self, batch_df: Any, batch_id: int) -> None:
         for row in batch_df.toLocalIterator():
             values = row.asDict(recursive=True)
-            if "event_json" in values:
-                payload = json.loads(values["event_json"])
-            else:
-                payload = {
-                    key: _json_value(value)
-                    for key, value in values.items()
-                    if key != "event_time_timestamp" and value is not None
-                }
-            self.consume(validate_event(payload), int(batch_id))
+            try:
+                if "event_json" in values:
+                    payload = json.loads(values["event_json"])
+                else:
+                    payload = {
+                        key: _json_value(value)
+                        for key, value in values.items()
+                        if key != "event_time_timestamp" and value is not None
+                    }
+                payload = validate_event(_canonical_adaptive_payload(payload))
+            except (TypeError, ValueError, json.JSONDecodeError) as exc:
+                self.rejected_count += 1
+                if self.on_rejected is not None:
+                    self.on_rejected(values, int(batch_id), str(exc))
+                continue
+            self.consume(payload, int(batch_id))
+
+
+def _canonical_adaptive_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    """Prefer stable catalog IDs while retaining names in the raw event."""
+    canonical = dict(payload)
+    catalog_product_id = canonical.get("catalog_product_id")
+    if isinstance(catalog_product_id, (int, str)) and not isinstance(catalog_product_id, bool):
+        canonical["product_id"] = str(catalog_product_id)
+    catalog_product_ids = canonical.get("catalog_product_ids")
+    if isinstance(catalog_product_ids, list):
+        canonical["product_ids"] = [str(product_id) for product_id in catalog_product_ids]
+    return canonical
 
 
 def consume_with(service: AdaptiveRankingService) -> EventConsumer:
@@ -56,6 +96,7 @@ def kafka_event_schema() -> Any:
             ArrayType,
             DoubleType,
             IntegerType,
+            LongType,
             StringType,
             StructField,
             StructType,
@@ -72,12 +113,16 @@ def kafka_event_schema() -> Any:
             StructField("session_id", StringType(), False),
             StructField("product_id", StringType(), True),
             StructField("product_ids", ArrayType(StringType(), containsNull=False), True),
+            StructField("catalog_product_id", LongType(), True),
+            StructField("catalog_product_ids", ArrayType(LongType(), containsNull=False), True),
             StructField("quantity", IntegerType(), True),
             StructField("dwell_seconds", DoubleType(), True),
             StructField("query", StringType(), True),
             StructField("order_id", StringType(), True),
             StructField("impression_id", StringType(), True),
             StructField("policy_version", StringType(), True),
+            StructField("snapshot_version", StringType(), True),
+            StructField("placement", StringType(), True),
             StructField("coupon_id", StringType(), True),
         ]
     )
@@ -140,6 +185,10 @@ def main() -> None:
     )
     parser.add_argument("--watermark", default="10 minutes")
     parser.add_argument("--starting-offsets", choices=("earliest", "latest"), default="earliest")
+    parser.add_argument(
+        "--dead-letter-path",
+        default=os.getenv("ADAPTIVE_DEAD_LETTER", ".runtime/adaptive-dead-letter.jsonl"),
+    )
     args = parser.parse_args()
 
     try:
@@ -156,7 +205,9 @@ def main() -> None:
         checkpoint_location=args.checkpoint_location,
         watermark=args.watermark,
         starting_offsets=args.starting_offsets,
-        foreach_batch=AdaptiveForeachBatch(consume_with(service)),
+        foreach_batch=AdaptiveForeachBatch(
+            consume_with(service), JsonlDeadLetterSink(args.dead_letter_path)
+        ),
     )
     query.awaitTermination()
 

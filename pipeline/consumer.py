@@ -10,7 +10,7 @@ import redis
 from kafka import KafkaConsumer, KafkaProducer
 
 from .coupon_engine import CouponEngine
-from .observability import ActivityLog
+from .observability import ActivityLog, CouponLedger
 from .rules import RedisRuleLookup
 from .serialization import JsonDeserializer, JsonSerializer
 from .topics import COUPONS_TOPIC, EVENTS_TOPIC
@@ -27,6 +27,7 @@ def main() -> None:
     redis_client = redis.Redis.from_url(args.redis_url, decode_responses=True)
     redis_client.ping()
     activity = ActivityLog(redis_client)
+    coupon_ledger = CouponLedger(redis_client)
     engine = CouponEngine(
         RedisRuleLookup(redis_client),
         dwell_threshold_seconds=float(os.getenv("DWELL_THRESHOLD_SECONDS", "45")),
@@ -55,6 +56,7 @@ def main() -> None:
             activity.record("event_received", {**message.value, "reason": reason})
             if decision:
                 producer.send(COUPONS_TOPIC, value=decision).get(timeout=10)
+                coupon_ledger.issue(decision)
                 activity.record("coupon_issued", decision)
                 print(json.dumps(decision), flush=True)
             elif message.value["event_type"] == "product_view_ended":

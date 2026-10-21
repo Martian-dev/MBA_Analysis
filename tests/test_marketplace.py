@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
+from pathlib import Path
+import subprocess
+import sys
 
 import pytest
 from kafka.errors import KafkaError
@@ -58,6 +62,31 @@ def test_deep_linked_product_page_and_detail_api_include_related_products(client
     assert client.get("/api/products/999999").status_code == 404
 
 
+def test_spark_serving_artifact_becomes_versioned_http_prior():
+    rules_path = Path(__file__).parent / "fixtures" / "spark-rules-serving.csv"
+    code = """
+import json
+from app.main import app
+with app.test_client() as client:
+    response = client.get('/api/recommend?item=European%20Cucumber&user_id=u&session_id=s')
+    print(json.dumps(response.get_json()))
+"""
+    environment = {**os.environ, "RULES_PATH": str(rules_path)}
+    completed = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=Path(__file__).parents[1],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    payload = json.loads(completed.stdout.splitlines()[-1])
+
+    assert payload["recommendation"]["snapshot_version"] == "fixture-spark-v1"
+    assert payload["recommendations"][0]["product_name"] == "Banana"
+
+
 def test_cart_recommendation_accepts_catalog_ids_and_excludes_cart(client):
     response = client.post(
         "/api/cart-recommend",
@@ -99,6 +128,7 @@ def test_product_recommendations_adapt_after_http_feedback(client, monkeypatch):
         "user_id": "adaptive-shopper",
         "session_id": "adaptive-session",
         "product_id": rewarded["product_name"],
+        "catalog_product_id": rewarded["product_id"],
         "impression_id": rewarded["impression_id"],
     })
     assert feedback.status_code == 202
@@ -172,7 +202,20 @@ def test_event_api_fails_fast_during_kafka_outage(client, monkeypatch):
     assert send_calls == ["offline-event-1"]
 
 
-def test_checkout_persists_a_demo_order_and_owner_can_look_it_up(client):
+def test_checkout_persists_a_demo_order_and_owner_can_look_it_up(client, monkeypatch):
+    class CouponLedger:
+        def redeem(self, coupon_ids, **kwargs):
+            assert coupon_ids == ["coupon-test"]
+            assert kwargs == {
+                "user_id": "shopper-test", "session_id": "session-test",
+                "order_id": "BS-test-order-001",
+            }
+            return [{
+                "coupon_id": "coupon-test", "product_id": "Banana",
+                "discount_percent": "5",
+            }]
+
+    monkeypatch.setattr(main, "coupon_ledger", lambda: CouponLedger())
     checkout = {
         "order_id": "BS-test-order-001",
         "user_id": "shopper-test",
@@ -198,6 +241,30 @@ def test_checkout_persists_a_demo_order_and_owner_can_look_it_up(client):
     assert lookup.get_json()["order"]["delivery"]["city"] == "Bengaluru"
     assert client.get("/api/orders/BS-test-order-001?user_id=someone-else").status_code == 404
     assert client.post("/api/checkout", json=checkout).status_code == 409
+
+
+def test_checkout_ignores_unissued_client_discount(client, monkeypatch):
+    class NoCouponsLedger:
+        def redeem(self, coupon_ids, **kwargs):
+            return []
+
+    monkeypatch.setattr(main, "coupon_ledger", lambda: NoCouponsLedger())
+    response = client.post("/api/checkout", json={
+        "order_id": "BS-unissued-coupon-001",
+        "user_id": "shopper-test", "session_id": "session-test", "name": "A",
+        "email": "a@example.com", "address": "Street", "city": "City",
+        "postal_code": "12345", "cart": [{"product_id": 24852, "quantity": 1}],
+        "coupons": [{"coupon_id": "made-up", "product_id": 24852, "discount_percent": 50}],
+    })
+
+    assert response.status_code == 201
+    assert response.get_json()["order"]["savings_inr"] == 0
+
+
+def test_exact_product_names_win_and_ambiguous_casefold_is_rejected():
+    assert main._product_for("Biotin 1000 mcg")["product_id"] == 42
+    assert main._product_for("Biotin 1000 Mcg")["product_id"] == 2059
+    assert main._product_for("BIOTIN 1000 MCG") is None
 
 
 def test_checkout_rejects_empty_or_malformed_orders(client):

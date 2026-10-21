@@ -485,6 +485,8 @@ def _write_serving_csv(rules: DataFrame, path: Path) -> None:
 
     temporary = path.parent / f".{path.name}.spark"
     serving = rules.select(
+        "antecedent_product_id",
+        "consequent_product_id",
         F.col("antecedent_product_name").alias("antecedents"),
         F.col("consequent_product_name").alias("consequents"),
         "support",
@@ -516,30 +518,33 @@ def run(config: BootstrapConfig) -> Path:
         raise FileExistsError(f"Run directory already exists: {run_dir}")
     run_dir.mkdir(parents=True)
 
-    spark = (
-        SparkSession.builder.appName(f"mba-historical-bootstrap-{config.run_id}")
-        .master(config.spark_master)
-        .config("spark.sql.shuffle.partitions", str(config.num_partitions))
-        .config("spark.ui.enabled", "false")
-        .getOrCreate()
-    )
-    spark.sparkContext.setLogLevel("ERROR")
+    spark = None
     manifest: dict[str, Any] = {
         "schema_version": SCHEMA_VERSION,
         "run_id": config.run_id,
         "status": "running",
         "started_at": started_at,
         "parameters": asdict(config),
-        "sources": _source_metadata(input_dir),
-        "spark": {
-            "version": spark.version,
-            "application_id": spark.sparkContext.applicationId,
-            "master": spark.sparkContext.master,
-        },
+        "sources": {},
+        "spark": {},
         "outputs": {},
         "output_base": "manifest_directory",
     }
     try:
+        spark = (
+            SparkSession.builder.appName(f"mba-historical-bootstrap-{config.run_id}")
+            .master(config.spark_master)
+            .config("spark.sql.shuffle.partitions", str(config.num_partitions))
+            .config("spark.ui.enabled", "false")
+            .getOrCreate()
+        )
+        spark.sparkContext.setLogLevel("ERROR")
+        manifest["spark"] = {
+            "version": spark.version,
+            "application_id": spark.sparkContext.applicationId,
+            "master": spark.sparkContext.master,
+        }
+        manifest["sources"] = _source_metadata(input_dir)
         source_tables = _read_tables(spark, input_dir)
         tables = _bounded_tables(source_tables, config)
         validation = _validate(tables, source_tables)
@@ -598,8 +603,11 @@ def run(config: BootstrapConfig) -> Path:
     finally:
         manifest["finished_at"] = _utc_now()
         manifest["duration_seconds"] = round(time.monotonic() - started, 3)
-        _write_json(run_dir / "manifest.json", manifest)
-        spark.stop()
+        try:
+            _write_json(run_dir / "manifest.json", manifest)
+        finally:
+            if spark is not None:
+                spark.stop()
 
 
 def _parser() -> argparse.ArgumentParser:

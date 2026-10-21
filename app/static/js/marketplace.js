@@ -61,12 +61,12 @@
         const source = options.source || 'catalog';
         const impressionId = options.impressionId || product.impression_id || '';
         return `<article class="product-card" data-product-card="${product.product_id}">
-            <a class="product-card__link" href="/product/${product.product_id}" data-product-link data-product-id="${product.product_id}" data-product-name="${escapeHtml(product.product_name)}" data-source="${escapeHtml(source)}" data-impression-id="${escapeHtml(impressionId)}">
+            <a class="product-card__link" href="/product/${product.product_id}" data-product-link data-product-id="${product.product_id}" data-product-name="${escapeHtml(product.product_name)}" data-source="${escapeHtml(source)}" data-impression-id="${escapeHtml(impressionId)}" data-policy-version="${escapeHtml(product.policy_version || '')}" data-snapshot-version="${escapeHtml(product.snapshot_version || '')}">
                 ${productArtwork(product)}
                 <span class="product-card__aisle">${escapeHtml(titleCase(product.aisle))}</span>
                 <h3>${escapeHtml(product.product_name)}</h3>
             </a>
-            <div class="product-card__foot"><div><strong>${money(product.price_inr)}</strong><small>illustrative INR</small></div><button class="round-add" type="button" data-add-product='${escapeHtml(JSON.stringify(product))}' aria-label="Add ${escapeHtml(product.product_name)} to basket">${icon('plus')}</button></div>
+            <div class="product-card__foot"><div><strong>${money(product.price_inr)}</strong><small>illustrative INR</small></div><button class="round-add" type="button" data-add-product='${escapeHtml(JSON.stringify(product))}' data-source="${escapeHtml(source)}" aria-label="Add ${escapeHtml(product.product_name)} to basket">${icon('plus')}</button></div>
         </article>`;
     }
 
@@ -110,6 +110,8 @@
         publish('cart_item_added', {
             product_id: product.product_name, catalog_product_id: product.product_id,
             product_name: product.product_name, quantity, source,
+            impression_id: product.impression_id, policy_version: product.policy_version,
+            snapshot_version: product.snapshot_version,
         }).catch(() => toast('Added locally. The live event stream is offline.'));
         toast(`${product.product_name} added to your basket`);
     }
@@ -178,10 +180,11 @@
             const response = await fetch('/api/cart-recommend', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({cart: getCart().map(item => item.product_id), user_id: identity.userId, session_id: identity.sessionId})});
             const data = await response.json(); const pairings = data.recommendations?.slice(0, 3) || [];
             section.hidden = !pairings.length;
-            list.innerHTML = pairings.map(product => `<div class="mini-pairing">${productArtwork(product)}<a href="/product/${product.product_id}" data-product-link data-source="cart_pairing" data-product-id="${product.product_id}" data-product-name="${escapeHtml(product.product_name)}" data-impression-id="${escapeHtml(product.impression_id)}"><strong>${escapeHtml(product.product_name)}</strong><small>with ${escapeHtml(product.supporting_product_name)}</small></a><button type="button" data-add-product='${escapeHtml(JSON.stringify(product))}' aria-label="Add ${escapeHtml(product.product_name)}">${icon('plus')}</button></div>`).join('');
+            list.innerHTML = pairings.map(product => `<div class="mini-pairing">${productArtwork(product)}<a href="/product/${product.product_id}" data-product-link data-source="cart_pairing" data-product-id="${product.product_id}" data-product-name="${escapeHtml(product.product_name)}" data-impression-id="${escapeHtml(product.impression_id)}" data-policy-version="${escapeHtml(product.policy_version || '')}" data-snapshot-version="${escapeHtml(product.snapshot_version || '')}"><strong>${escapeHtml(product.product_name)}</strong><small>with ${escapeHtml(product.supporting_product_name)}</small></a><button type="button" data-add-product='${escapeHtml(JSON.stringify(product))}' data-source="cart_pairing" aria-label="Add ${escapeHtml(product.product_name)}">${icon('plus')}</button></div>`).join('');
             pairings.forEach(product => publish('recommendation_impression', {
                 product_id: product.product_name, catalog_product_id: product.product_id,
                 product_name: product.product_name, impression_id: product.impression_id,
+                policy_version: product.policy_version, snapshot_version: product.snapshot_version,
                 placement: 'cart_drawer', supporting_product_id: product.supporting_product_id,
             }).catch(() => {}));
         } catch (_) { section.hidden = true; }
@@ -241,6 +244,8 @@
         if (productLink && productLink.dataset.source !== 'catalog') publish('recommendation_clicked', {
             product_id: productLink.dataset.productName, catalog_product_id: Number(productLink.dataset.productId),
             product_name: productLink.dataset.productName, impression_id: productLink.dataset.impressionId || undefined,
+            policy_version: productLink.dataset.policyVersion || undefined,
+            snapshot_version: productLink.dataset.snapshotVersion || undefined,
             placement: productLink.dataset.source,
         }, true).catch(() => {});
     });

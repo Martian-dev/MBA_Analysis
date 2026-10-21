@@ -112,6 +112,8 @@ def test_batch_cli_publishes_validated_versioned_artifacts(tmp_path: Path):
         serving_rules = list(csv.DictReader(handle))
     assert serving_rules
     assert set(serving_rules[0]) == {
+        "antecedent_product_id",
+        "consequent_product_id",
         "antecedents",
         "consequents",
         "support",
@@ -120,3 +122,5 @@ def test_batch_cli_publishes_validated_versioned_artifacts(tmp_path: Path):
         "run_id",
     }
     assert {row["run_id"] for row in serving_rules} == {"fixture-run"}
+    assert all(row["antecedent_product_id"].isdigit() for row in serving_rules)
+    assert all(row["consequent_product_id"].isdigit() for row in serving_rules)

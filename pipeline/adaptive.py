@@ -8,7 +8,7 @@ eligibility remains a separate, non-learning policy boundary.
 from __future__ import annotations
 
 import math
-from collections import defaultdict
+from collections import OrderedDict, defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Protocol, Sequence
 
@@ -185,8 +185,9 @@ class ImpressionStore(Protocol):
 
 
 class InMemoryImpressionStore:
-    def __init__(self) -> None:
-        self._items: dict[str, _RecordedImpression] = {}
+    def __init__(self, max_impressions: int = 10_000) -> None:
+        self.max_impressions = max_impressions
+        self._items: OrderedDict[str, _RecordedImpression] = OrderedDict()
         self._latest: dict[tuple[str, str, str], str] = {}
 
     def record(self, impression: _RecordedImpression) -> None:
@@ -195,6 +196,12 @@ class InMemoryImpressionStore:
             self._latest[(impression.user_id, impression.session_id, candidate.product_id)] = (
                 impression.impression_id
             )
+        while len(self._items) > self.max_impressions:
+            expired_id, expired = self._items.popitem(last=False)
+            for candidate in expired.candidates:
+                key = (expired.user_id, expired.session_id, candidate.product_id)
+                if self._latest.get(key) == expired_id:
+                    self._latest.pop(key, None)
 
     def get(self, impression_id: str) -> _RecordedImpression | None:
         return self._items.get(impression_id)
@@ -212,6 +219,10 @@ class BanditState(Protocol):
     ) -> tuple[float, float, tuple[float, ...]]: ...
 
     def update(self, product_id: str, features: Sequence[float], reward: float) -> None: ...
+
+    def update_many(
+        self, updates: Sequence[tuple[str, Sequence[float], float]]
+    ) -> None: ...
 
 
 @dataclass
@@ -252,6 +263,16 @@ class InMemoryLinUCBState:
         return estimate, exploration, contributions
 
     def update(self, product_id: str, features: Sequence[float], reward: float) -> None:
+        self.update_many(((product_id, features, reward),))
+
+    def update_many(
+        self, updates: Sequence[tuple[str, Sequence[float], float]]
+    ) -> None:
+        """Apply one feedback event's action updates as a single adapter call."""
+        for product_id, features, reward in updates:
+            self._update_one(product_id, features, reward)
+
+    def _update_one(self, product_id: str, features: Sequence[float], reward: float) -> None:
         state = self._state(product_id)
         projected = _matrix_vector(state.inverse_covariance, features)
         denominator = 1.0 + _dot(features, projected)
@@ -267,7 +288,9 @@ class InMemoryLinUCBState:
 class LiveFeatureStore:
     """Bounded live signals at session, shopper, product, and pair scopes."""
 
-    def __init__(self) -> None:
+    def __init__(self, max_feature_keys: int = 50_000, max_sessions: int = 10_000) -> None:
+        self.max_feature_keys = max_feature_keys
+        self.max_sessions = max_sessions
         self._session_product: defaultdict[tuple[str, str, str], float] = defaultdict(float)
         self._shopper_product: defaultdict[tuple[str, str], float] = defaultdict(float)
         self._product_positive: defaultdict[str, float] = defaultdict(float)
@@ -281,28 +304,32 @@ class LiveFeatureStore:
         product_id = candidate.product_id
         session_key = (request.user_id, request.session_id, product_id)
         shopper_key = (request.user_id, product_id)
-        cart = set(request.cart_product_ids) | self._carts[(request.user_id, request.session_id)]
+        cart = set(request.cart_product_ids) | self._carts.get(
+            (request.user_id, request.session_id), set()
+        )
         pair_affinity = max(
             (
-                self._pair_affinity[_pair_key(item, product_id)]
+                self._pair_affinity.get(_pair_key(item, product_id), 0.0)
                 for item in cart
                 if item != product_id
             ),
             default=0.0,
         )
-        impressions = self._product_impressions[product_id]
-        response_rate = self._product_positive[product_id] / max(1.0, float(impressions))
+        impressions = self._product_impressions.get(product_id, 0)
+        response_rate = self._product_positive.get(product_id, 0.0) / max(
+            1.0, float(impressions)
+        )
         return (
             1.0,
             _bounded(candidate.prior_score),
-            _bounded(self._session_product[session_key] / 4.0, lower=-1.0),
-            _bounded(self._shopper_product[shopper_key] / 8.0, lower=-1.0),
+            _bounded(self._session_product.get(session_key, 0.0) / 4.0, lower=-1.0),
+            _bounded(self._shopper_product.get(shopper_key, 0.0) / 8.0, lower=-1.0),
             _bounded(response_rate, lower=-1.0),
             _bounded(pair_affinity / 4.0, lower=-1.0),
         )
 
     def cart_product_ids(self, user_id: str, session_id: str) -> frozenset[str]:
-        return frozenset(self._carts[(user_id, session_id)])
+        return frozenset(self._carts.get((user_id, session_id), set()))
 
     def observe(self, event: Mapping[str, Any]) -> None:
         event_type = str(event["event_type"])
@@ -310,39 +337,51 @@ class LiveFeatureStore:
         session_id = str(event["session_id"])
         product_id = event.get("product_id")
         if event_type == "recommendation_impression" and product_id:
-            self._product_impressions[str(product_id)] += 1
+            self._increment(self._product_impressions, str(product_id), 1)
         elif event_type == "product_view_ended" and product_id:
             self._adjust(user_id, session_id, str(product_id), 0.25)
         elif event_type == "recommendation_clicked" and product_id:
             self._adjust(user_id, session_id, str(product_id), 1.0)
-            self._product_positive[str(product_id)] += 0.5
+            self._increment(self._product_positive, str(product_id), 0.5)
         elif event_type == "cart_item_added" and product_id:
             product_id = str(product_id)
             cart = self._carts[(user_id, session_id)]
+            self._trim(self._carts, self.max_sessions)
             for cart_item in cart:
-                self._pair_affinity[_pair_key(cart_item, product_id)] += 1.0
+                self._increment(self._pair_affinity, _pair_key(cart_item, product_id), 1.0)
             cart.add(product_id)
             self._adjust(user_id, session_id, product_id, 2.0)
-            self._product_positive[product_id] += 1.0
+            self._increment(self._product_positive, product_id, 1.0)
         elif event_type == "cart_item_removed" and product_id:
             product_id = str(product_id)
-            self._carts[(user_id, session_id)].discard(product_id)
+            cart = self._carts.get((user_id, session_id))
+            if cart is not None:
+                cart.discard(product_id)
             self._adjust(user_id, session_id, product_id, -1.5)
         elif event_type == "coupon_applied" and product_id:
             self._adjust(user_id, session_id, str(product_id), 1.5)
-            self._product_positive[str(product_id)] += 0.75
+            self._increment(self._product_positive, str(product_id), 0.75)
         elif event_type == "checkout_completed":
             product_ids = [str(item) for item in event.get("product_ids", [])]
             for item in product_ids:
                 self._adjust(user_id, session_id, item, 2.0)
-                self._product_positive[item] += 1.0
+                self._increment(self._product_positive, item, 1.0)
             for index, left in enumerate(product_ids):
                 for right in product_ids[index + 1 :]:
-                    self._pair_affinity[_pair_key(left, right)] += 1.0
+                    self._increment(self._pair_affinity, _pair_key(left, right), 1.0)
 
     def _adjust(self, user_id: str, session_id: str, product_id: str, amount: float) -> None:
-        self._session_product[(user_id, session_id, product_id)] += amount
-        self._shopper_product[(user_id, product_id)] += amount
+        self._increment(self._session_product, (user_id, session_id, product_id), amount)
+        self._increment(self._shopper_product, (user_id, product_id), amount)
+
+    def _increment(self, mapping: dict[Any, Any], key: Any, amount: float) -> None:
+        mapping[key] = mapping.get(key, 0) + amount
+        self._trim(mapping, self.max_feature_keys)
+
+    @staticmethod
+    def _trim(mapping: dict[Any, Any], maximum: int) -> None:
+        while len(mapping) > maximum:
+            mapping.pop(next(iter(mapping)))
 
 
 class CouponGuardrails:
@@ -353,11 +392,13 @@ class CouponGuardrails:
         min_lift: float = 1.5,
         min_confidence: float = 0.10,
         min_support: float = 0.012,
+        max_issued: int = 50_000,
     ) -> None:
         self.min_lift = min_lift
         self.min_confidence = min_confidence
         self.min_support = min_support
-        self._issued: set[tuple[str, str]] = set()
+        self.max_issued = max_issued
+        self._issued: OrderedDict[tuple[str, str], None] = OrderedDict()
 
     def suppression_reason(
         self, request: RankingRequest, candidate: HistoricalCandidate
@@ -382,7 +423,11 @@ class CouponGuardrails:
         return None
 
     def record_issued(self, user_id: str, product_id: str) -> None:
-        self._issued.add((user_id, product_id))
+        key = (user_id, product_id)
+        self._issued[key] = None
+        self._issued.move_to_end(key)
+        while len(self._issued) > self.max_issued:
+            self._issued.popitem(last=False)
 
 
 _EVENT_REWARDS = {
@@ -395,7 +440,12 @@ _EVENT_REWARDS = {
 
 
 class AdaptiveRankingService:
-    """Public adaptive-decision seam used by HTTP handlers and replay jobs."""
+    """Public adaptive-decision seam used by HTTP handlers and replay jobs.
+
+    Event IDs are deduplicated across the most recent 50,000 successfully
+    applied events. Durable deployments should provide the same bounded claim
+    semantics in their shared state adapter.
+    """
 
     def __init__(
         self,
@@ -414,7 +464,7 @@ class AdaptiveRankingService:
         self.impressions = impressions or InMemoryImpressionStore()
         self.guardrails = guardrails or CouponGuardrails()
         self._decision_sequence = 0
-        self._processed_events: set[str] = set()
+        self._processed_events: OrderedDict[str, None] = OrderedDict()
 
     def rank(self, request: RankingRequest, snapshot: CandidateSnapshot) -> RankingDecision:
         live_cart = self.features.cart_product_ids(request.user_id, request.session_id)
@@ -474,15 +524,6 @@ class AdaptiveRankingService:
 
         scored.sort(key=lambda item: (-item[1], item[0].product_id))
         selected = scored[: request.limit]
-        items = tuple(
-            RankedCandidate(
-                product_id=candidate.product_id,
-                score=round(score, 8),
-                offer_type=candidate.offer_type,
-                explanation=explanation,
-            )
-            for candidate, score, explanation in selected
-        )
         self._decision_sequence += 1
         impression_id = f"adaptive-impression-{self._decision_sequence:08d}"
         recorded = _RecordedImpression(
@@ -500,7 +541,23 @@ class AdaptiveRankingService:
         )
         # This write deliberately precedes returning the decision. Feedback is
         # never eligible to train against an unrecorded impression.
-        self.impressions.record(recorded)
+        try:
+            self.impressions.record(recorded)
+        except (RuntimeError, ConnectionError, TimeoutError):
+            mode = "historical_fallback"
+            impression_id = f"historical-fallback-{self._decision_sequence:08d}"
+            historical = _historical_scores(safe, vectors)
+            historical.sort(key=lambda item: (-item[1], item[0].product_id))
+            selected = historical[: request.limit]
+        items = tuple(
+            RankedCandidate(
+                product_id=candidate.product_id,
+                score=round(score, 8),
+                offer_type=candidate.offer_type,
+                explanation=explanation,
+            )
+            for candidate, score, explanation in selected
+        )
         for candidate, _, _ in selected:
             if candidate.offer_type == "coupon":
                 self.guardrails.record_issued(request.user_id, candidate.product_id)
@@ -540,19 +597,22 @@ class AdaptiveRankingService:
         event_id = event["event_id"]
         if event_id in self._processed_events:
             return FeedbackResult("duplicate_event")
-        self._processed_events.add(event_id)
-        self.features.observe(event)
         event_type = event["event_type"]
         reward = _EVENT_REWARDS.get(event_type)
         if reward is None:
+            self.features.observe(event)
+            self._mark_processed(event_id)
             return FeedbackResult("observed_no_reward")
 
         product_ids = list(event.get("product_ids", []))
         if event.get("product_id"):
             product_ids.append(event["product_id"])
-        updated: list[str] = []
+        updates: list[tuple[str, Sequence[float], float]] = []
         for product_id in dict.fromkeys(product_ids):
-            impression = self._find_impression(event, product_id)
+            try:
+                impression = self._find_impression(event, product_id)
+            except (RuntimeError, ConnectionError, TimeoutError):
+                return FeedbackResult("state_unavailable")
             if impression is None:
                 continue
             displayed = next(
@@ -565,14 +625,23 @@ class AdaptiveRankingService:
             )
             if displayed is None:
                 continue
-            try:
-                self.bandit_state.update(product_id, displayed.features, reward)
-            except (RuntimeError, ConnectionError, TimeoutError):
-                return FeedbackResult("state_unavailable")
-            updated.append(product_id)
-        if not updated:
+            updates.append((product_id, displayed.features, reward))
+        if not updates:
+            self.features.observe(event)
+            self._mark_processed(event_id)
             return FeedbackResult("ignored_no_impression")
-        return FeedbackResult("learned", tuple(updated), reward)
+        try:
+            self.bandit_state.update_many(updates)
+        except (RuntimeError, ConnectionError, TimeoutError):
+            return FeedbackResult("state_unavailable")
+        self.features.observe(event)
+        self._mark_processed(event_id)
+        return FeedbackResult("learned", tuple(item[0] for item in updates), reward)
+
+    def _mark_processed(self, event_id: str) -> None:
+        self._processed_events[event_id] = None
+        if len(self._processed_events) > 50_000:
+            self._processed_events.popitem(last=False)
 
     def observe_event(self, event: dict[str, Any]) -> FeedbackResult:
         """Alias used by stream processors at the live feature boundary."""

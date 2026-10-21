@@ -13,7 +13,7 @@ from .rules import CATALOG_KEY, load_rules, rule_key
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--rules", default="app/rules.csv")
+    parser.add_argument("--rules", default=os.getenv("RULES_PATH", "app/rules.csv"))
     parser.add_argument("--redis-url", default=os.getenv("REDIS_URL", "redis://localhost:6379/0"))
     parser.add_argument("--min-lift", type=float, default=float(os.getenv("MIN_LIFT", "1.5")))
     args = parser.parse_args()

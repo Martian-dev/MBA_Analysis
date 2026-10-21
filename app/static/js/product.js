@@ -41,7 +41,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         renderStage(); renderFeatured();
         relatedGrid.innerHTML = data.related_products.map(item => Market.productCard(item, {source: 'product_related'})).join('');
         Market.publish('product_view_started', {product_id: product.product_name, catalog_product_id: product.product_id, product_name: product.product_name, referrer: document.referrer || null}).catch(() => {});
-        data.related_products.forEach(item => Market.publish('recommendation_impression', {product_id: item.product_name, catalog_product_id: item.product_id, product_name: item.product_name, impression_id: item.impression_id, placement: 'product_related', supporting_product_id: product.product_id}).catch(() => {}));
+        data.related_products.forEach(item => Market.publish('recommendation_impression', {product_id: item.product_name, catalog_product_id: item.product_id, product_name: item.product_name, impression_id: item.impression_id, policy_version: item.policy_version, snapshot_version: item.snapshot_version, placement: 'product_related', supporting_product_id: product.product_id}).catch(() => {}));
     } catch (_) {
         stage.innerHTML = '<div class="load-error"><strong>This product could not be loaded.</strong><p>Return to the market and choose another item.</p><a class="button button--primary" href="/">Back to market</a></div>';
     }

@@ -4,6 +4,7 @@ from pipeline.adaptive import (
     AdaptiveRankingService,
     CandidateSnapshot,
     CouponGuardrails,
+    InMemoryLinUCBState,
     RankingRequest,
 )
 from pipeline.adaptive_replay import run_replay
@@ -97,6 +98,9 @@ def test_historical_order_is_used_when_adaptive_state_is_unavailable():
         def update(self, product_id, features, reward):
             raise RuntimeError("state backend offline")
 
+        def update_many(self, updates):
+            raise RuntimeError("state backend offline")
+
     service = AdaptiveRankingService(bandit_state=UnavailableState())
     snapshot = CandidateSnapshot.from_records(
         "v1",
@@ -108,6 +112,42 @@ def test_historical_order_is_used_when_adaptive_state_is_unavailable():
     decision = service.rank(RankingRequest("shopper-1", "session-1"), snapshot)
     assert decision.policy_mode == "historical_fallback"
     assert [item.product_id for item in decision.items] == ["p-high", "p-low"]
+
+
+def test_historical_order_is_used_when_impression_store_is_unavailable():
+    class UnavailableImpressions:
+        def record(self, impression):
+            raise ConnectionError("impression backend offline")
+
+        def get(self, impression_id):
+            raise ConnectionError("impression backend offline")
+
+        def latest_for(self, user_id, session_id, product_id):
+            raise ConnectionError("impression backend offline")
+
+    service = AdaptiveRankingService(impressions=UnavailableImpressions())
+    snapshot = CandidateSnapshot.from_records(
+        "v1",
+        [
+            candidate("p-low", 0.2, snapshot_version="v1"),
+            candidate("p-high", 0.9, snapshot_version="v1"),
+        ],
+    )
+
+    decision = service.rank(RankingRequest("shopper-1", "session-1"), snapshot)
+
+    assert decision.policy_mode == "historical_fallback"
+    assert decision.impression_id.startswith("historical-fallback-")
+    assert [item.product_id for item in decision.items] == ["p-high", "p-low"]
+    feedback = service.consume_feedback(
+        event(
+            "click-fallback",
+            "recommendation_clicked",
+            "p-high",
+            impression_id=decision.impression_id,
+        )
+    )
+    assert feedback.status == "state_unavailable"
 
 
 def test_coupon_guardrails_filter_unsafe_candidates_before_learning():
@@ -150,6 +190,34 @@ def test_duplicate_feedback_event_is_idempotent():
     snapshot = CandidateSnapshot.from_records("v1", [candidate("p1", 0.5, snapshot_version="v1")])
     first = service.rank(RankingRequest("shopper-1", "session-1"), snapshot)
     feedback = event("click-1", "recommendation_clicked", "p1", impression_id=first.impression_id)
+    assert service.consume_feedback(feedback).status == "learned"
+    assert service.consume_feedback(feedback).status == "duplicate_event"
+
+
+def test_state_outage_keeps_feedback_retryable_until_commit_succeeds():
+    class FailOnceState(InMemoryLinUCBState):
+        def __init__(self):
+            super().__init__()
+            self.available = False
+
+        def update_many(self, updates):
+            if not self.available:
+                raise ConnectionError("state backend offline")
+            super().update_many(updates)
+
+    state = FailOnceState()
+    service = AdaptiveRankingService(bandit_state=state)
+    snapshot = CandidateSnapshot.from_records(
+        "v1", [candidate("p1", 0.5, snapshot_version="v1")]
+    )
+    decision = service.rank(RankingRequest("shopper-1", "session-1"), snapshot)
+    feedback = event(
+        "retryable-click", "recommendation_clicked", "p1",
+        impression_id=decision.impression_id,
+    )
+
+    assert service.consume_feedback(feedback).status == "state_unavailable"
+    state.available = True
     assert service.consume_feedback(feedback).status == "learned"
     assert service.consume_feedback(feedback).status == "duplicate_event"
 

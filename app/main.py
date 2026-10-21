@@ -23,7 +23,7 @@ from redis.exceptions import RedisError
 
 from pipeline.contracts import validate_event
 from pipeline.adaptive import create_adaptive_service
-from pipeline.observability import ActivityLog
+from pipeline.observability import ActivityLog, CouponLedger
 from pipeline.serialization import JsonSerializer
 from pipeline.topics import EVENTS_TOPIC
 
@@ -34,17 +34,19 @@ app = Flask(__name__)
 
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = BASE_DIR.parent
-RULES_PATH = BASE_DIR / "rules.csv"
+RULES_PATH = Path(os.getenv("RULES_PATH", BASE_DIR / "rules.csv"))
 MAPPING_PATH = BASE_DIR / "group_mapping.json"
 DATA_DIR = Path(os.getenv("INSTACART_DATA_DIR", PROJECT_DIR / "InstacartMBA"))
 DEFAULT_ORDER_STORE = PROJECT_DIR / ".runtime" / "marketplace" / "orders.jsonl"
 app.config.setdefault("ORDER_STORE_PATH", str(DEFAULT_ORDER_STORE))
 
 rules_df = pd.DataFrame(columns=["antecedents", "consequents", "support", "confidence", "lift"])
+rules_snapshot_version = "legacy-app-rules"
 item_to_rep_map: dict[str, str] = {}
 catalog_products: list[dict[str, Any]] = []
 products_by_id: dict[int, dict[str, Any]] = {}
-products_by_name: dict[str, dict[str, Any]] = {}
+products_by_exact_name: dict[str, dict[str, Any]] = {}
+products_by_folded_name: dict[str, list[dict[str, Any]]] = {}
 departments: list[dict[str, Any]] = []
 aisles: list[dict[str, Any]] = []
 _event_producer = None
@@ -67,11 +69,20 @@ def _read_lookup(path: Path, id_field: str, name_field: str) -> dict[int, str]:
 
 def load_data() -> None:
     """Load the full Instacart catalog and temporary rule artifact once."""
-    global rules_df, item_to_rep_map, catalog_products, products_by_id, products_by_name
+    global rules_df, rules_snapshot_version, item_to_rep_map, catalog_products, products_by_id
+    global products_by_exact_name, products_by_folded_name
     global departments, aisles
 
     try:
         rules_df = pd.read_csv(RULES_PATH)
+        run_ids = (
+            rules_df["run_id"].dropna().astype(str).str.strip().loc[lambda values: values != ""].unique()
+            if "run_id" in rules_df.columns
+            else []
+        )
+        rules_snapshot_version = os.getenv("RULES_SNAPSHOT_VERSION", "").strip()
+        if not rules_snapshot_version:
+            rules_snapshot_version = str(run_ids[0]) if len(run_ids) == 1 else "legacy-app-rules"
     except Exception as exc:  # pragma: no cover - startup fallback
         print(f"Could not load association rules: {exc}")
         rules_df = pd.DataFrame(columns=rules_df.columns)
@@ -109,7 +120,11 @@ def load_data() -> None:
 
         catalog_products = loaded
         products_by_id = {product["product_id"]: product for product in loaded}
-        products_by_name = {product["product_name"].casefold(): product for product in loaded}
+        products_by_exact_name = {}
+        products_by_folded_name = {}
+        for product in loaded:
+            products_by_exact_name[product["product_name"]] = product
+            products_by_folded_name.setdefault(product["product_name"].casefold(), []).append(product)
         departments = [
             {"department_id": key, "department": value, "product_count": department_counts.get(key, 0)}
             for key, value in sorted(department_names.items(), key=lambda item: item[1])
@@ -123,7 +138,8 @@ def load_data() -> None:
         print(f"Could not load Instacart catalog from {DATA_DIR}: {exc}")
         catalog_products = []
         products_by_id = {}
-        products_by_name = {}
+        products_by_exact_name = {}
+        products_by_folded_name = {}
         departments = []
         aisles = []
 
@@ -133,6 +149,10 @@ load_data()
 
 def activity_log() -> ActivityLog:
     return ActivityLog(Redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True))
+
+
+def coupon_ledger() -> CouponLedger:
+    return CouponLedger(Redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True))
 
 
 def event_producer() -> KafkaProducer:
@@ -156,19 +176,35 @@ def _product_for(value: Any) -> dict[str, Any] | None:
     if isinstance(value, int) or (isinstance(value, str) and value.isdigit()):
         return products_by_id.get(int(value))
     if isinstance(value, str):
-        return products_by_name.get(value.casefold())
+        exact = products_by_exact_name.get(value)
+        if exact is not None:
+            return exact
+        folded = products_by_folded_name.get(value.casefold(), [])
+        return folded[0] if len(folded) == 1 else None
     return None
 
 
 def _related_products(product: dict[str, Any], limit: int = 6) -> list[dict[str, Any]]:
     """Resolve rule-backed products first, then fill with products from the aisle."""
     name = product["product_name"]
-    representative = item_to_rep_map.get(name, name)
-    matches = rules_df[rules_df["antecedents"] == representative].sort_values("lift", ascending=False)
+    # Spark artifacts use catalog IDs; the semantic representative mapping
+    # applies only to the legacy name-based fallback.
+    has_catalog_ids = {"antecedent_product_id", "consequent_product_id"} <= set(rules_df.columns)
+    if has_catalog_ids:
+        matches = rules_df[
+            pd.to_numeric(rules_df["antecedent_product_id"], errors="coerce").eq(product["product_id"])
+        ].sort_values("lift", ascending=False)
+    else:
+        representative = name if "run_id" in rules_df.columns else item_to_rep_map.get(name, name)
+        matches = rules_df[rules_df["antecedents"] == representative].sort_values("lift", ascending=False)
     chosen: list[dict[str, Any]] = []
     seen = {product["product_id"]}
     for _, rule in matches.iterrows():
-        candidate = products_by_name.get(str(rule["consequents"]).casefold())
+        candidate = (
+            products_by_id.get(int(rule["consequent_product_id"]))
+            if has_catalog_ids and pd.notna(rule["consequent_product_id"])
+            else _product_for(str(rule["consequents"]))
+        )
         if candidate and candidate["product_id"] not in seen:
             item = _public_product(candidate)
             item["recommendation_reason"] = f"Often paired with {name}"
@@ -204,9 +240,9 @@ def _adaptive_rank_products(
         return products[:limit], None
     candidates = [
         {
-            "product_id": item["product_name"],
+            "product_id": str(item["product_id"]),
             "prior_score": float(item.get("lift") or (1 / (index + 1))),
-            "snapshot_version": "marketplace-rules-v1",
+            "snapshot_version": rules_snapshot_version,
             "catalog_product_id": item["product_id"],
             **(
                 {"supporting_product_id": item["supporting_product_name"]}
@@ -221,15 +257,17 @@ def _adaptive_rank_products(
             user_id=user_id,
             session_id=session_id,
             candidates=candidates,
-            snapshot_version="marketplace-rules-v1",
-            cart_product_ids=[product["product_name"] for product in (cart_products or [])],
+            snapshot_version=rules_snapshot_version,
+            cart_product_ids=[str(product["product_id"]) for product in (cart_products or [])],
             limit=limit,
         )
-    by_name = {item["product_name"]: item for item in products}
+    by_id = {str(item["product_id"]): item for item in products}
     ranked: list[dict[str, Any]] = []
     for ranked_item in decision["items"]:
-        product = by_name[ranked_item["product_id"]]
+        product = by_id[ranked_item["product_id"]]
         product["impression_id"] = decision["impression_id"]
+        product["policy_version"] = decision["policy_version"]
+        product["snapshot_version"] = decision["snapshot_version"]
         product["policy_mode"] = decision["policy_mode"]
         product["adaptive_score"] = ranked_item["score"]
         product["adaptive_explanation"] = ranked_item["explanation"]
@@ -304,8 +342,15 @@ def publish_storefront_event():
             _event_retry_after = time.monotonic() + 5
             return jsonify({"error": "Kafka is unavailable. Start the live stack."}), 503
         _event_retry_after = 0.0
+    adaptive_event = dict(event)
+    catalog_product_id = event.get("catalog_product_id")
+    if isinstance(catalog_product_id, (int, str)) and not isinstance(catalog_product_id, bool):
+        adaptive_event["product_id"] = str(catalog_product_id)
+    catalog_product_ids = event.get("catalog_product_ids")
+    if isinstance(catalog_product_ids, list):
+        adaptive_event["product_ids"] = [str(product_id) for product_id in catalog_product_ids]
     with _adaptive_lock:
-        feedback = adaptive_service.observe_event(event)
+        feedback = adaptive_service.observe_event(adaptive_event)
     return jsonify({
         "status": "accepted", "event_id": event["event_id"],
         "adaptive_feedback_status": feedback.status,
@@ -500,44 +545,60 @@ def create_order():
         subtotal += line_total
         line_items.append({**_public_product(product), "quantity": quantity, "line_total_inr": line_total})
 
-    coupon_by_product: dict[int, dict[str, Any]] = {}
-    for coupon in data.get("coupons", []):
-        if not isinstance(coupon, dict):
-            continue
-        product_id = coupon.get("product_id")
-        discount = coupon.get("discount_percent")
-        if isinstance(product_id, int) and isinstance(discount, (int, float)) and 0 < discount <= 50:
-            coupon_by_product[product_id] = coupon
-    savings = 0.0
-    applied_coupons: list[dict[str, Any]] = []
-    for line in line_items:
-        coupon = coupon_by_product.get(line["product_id"])
-        if coupon:
-            savings += line["line_total_inr"] * float(coupon["discount_percent"]) / 100
-            applied_coupons.append({
-                "coupon_id": str(coupon.get("coupon_id", "demo-coupon")),
-                "product_id": line["product_id"],
-                "discount_percent": float(coupon["discount_percent"]),
-            })
-    order = {
-        "order_id": data["order_id"], "status": "confirmed_demo",
-        "created_at": datetime.now(timezone.utc).isoformat(),
-        "user_id": data["user_id"], "session_id": data["session_id"],
-        "delivery": {
-            "name": data["name"].strip(), "email": data["email"].strip(),
-            "address": data["address"].strip(), "city": data["city"].strip(),
-            "postal_code": data["postal_code"].strip(),
-        },
-        "items": line_items, "applied_coupons": applied_coupons,
-        "subtotal_inr": round(subtotal, 2), "savings_inr": round(savings, 2),
-        "total_inr": round(max(0, subtotal - savings), 2), "currency": "INR",
-        "price_disclosure": "All prices are illustrative; no payment was processed.",
-    }
+    requested_coupon_ids = [
+        str(coupon["coupon_id"])
+        for coupon in data.get("coupons", [])
+        if isinstance(coupon, dict) and isinstance(coupon.get("coupon_id"), str)
+    ]
     path = Path(app.config["ORDER_STORE_PATH"])
     path.parent.mkdir(parents=True, exist_ok=True)
     with _order_lock:
-        if any(record["order_id"] == order["order_id"] for record in _order_records()):
+        if any(record["order_id"] == data["order_id"] for record in _order_records()):
             return jsonify({"error": "This order has already been submitted"}), 409
+        try:
+            redeemed = coupon_ledger().redeem(
+                requested_coupon_ids,
+                user_id=data["user_id"],
+                session_id=data["session_id"],
+                order_id=data["order_id"],
+            )
+        except RedisError:
+            return jsonify({"error": "Coupon service is unavailable; retry checkout."}), 503
+
+        coupon_by_product: dict[int, dict[str, Any]] = {}
+        for coupon in redeemed:
+            product = _product_for(coupon.get("product_id"))
+            try:
+                discount = float(coupon.get("discount_percent", 0))
+            except (TypeError, ValueError):
+                continue
+            if product and 0 < discount <= 50:
+                coupon_by_product[product["product_id"]] = {**coupon, "discount_percent": discount}
+        savings = 0.0
+        applied_coupons: list[dict[str, Any]] = []
+        for line in line_items:
+            coupon = coupon_by_product.get(line["product_id"])
+            if coupon:
+                savings += line["line_total_inr"] * coupon["discount_percent"] / 100
+                applied_coupons.append({
+                    "coupon_id": coupon["coupon_id"],
+                    "product_id": line["product_id"],
+                    "discount_percent": coupon["discount_percent"],
+                })
+        order = {
+            "order_id": data["order_id"], "status": "confirmed_demo",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "user_id": data["user_id"], "session_id": data["session_id"],
+            "delivery": {
+                "name": data["name"].strip(), "email": data["email"].strip(),
+                "address": data["address"].strip(), "city": data["city"].strip(),
+                "postal_code": data["postal_code"].strip(),
+            },
+            "items": line_items, "applied_coupons": applied_coupons,
+            "subtotal_inr": round(subtotal, 2), "savings_inr": round(savings, 2),
+            "total_inr": round(max(0, subtotal - savings), 2), "currency": "INR",
+            "price_disclosure": "All prices are illustrative; no payment was processed.",
+        }
         with path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(order, ensure_ascii=False) + "\n")
     return jsonify({"status": "confirmed", "order": order}), 201

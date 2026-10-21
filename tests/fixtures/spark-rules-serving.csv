@@ -1,0 +1,2 @@
+antecedent_product_id,consequent_product_id,antecedents,consequents,support,confidence,lift,run_id
+45,24852,European Cucumber,Banana,0.01,0.5,3.15,fixture-spark-v1
