@@ -1,5 +1,5 @@
 {
-  "run_id": "final-bounded-real-20261021",
+  "run_id": "final-bounded-real-canonical-20261021",
   "status": "succeeded",
   "schema_version": "1.0",
   "spark": {
@@ -49,8 +49,8 @@
     "null_required_fields": 0,
     "domain_violations": 0
   },
-  "duration_seconds": 39.564,
-  "started_at": "2026-10-21T15:29:26.193794+00:00",
-  "finished_at": "2026-10-21T15:30:05.753516+00:00",
-  "artifact_note": "This committed evidence summary was derived from the generated manifest. Re-run the documented command to regenerate Parquet, JSON, serving CSV, validation, and full manifest artifacts."
+  "duration_seconds": 38.267,
+  "started_at": "2026-10-21T15:47:36.728161+00:00",
+  "finished_at": "2026-10-21T15:48:14.991051+00:00",
+  "artifact_note": "This committed evidence summary was derived from the generated manifest. Its serving CSV includes canonical antecedent and consequent catalog IDs alongside display names. Re-run the documented command to regenerate Parquet, JSON, serving CSV, validation, and full manifest artifacts."
 }

@@ -67,11 +67,25 @@ For a fresh end-to-end run, use the root launcher:
 ./start.sh
 ```
 
-Then open <http://127.0.0.1:5000/viewer>. The launcher continuously samples real products and qualifying association pairs from `app/rules.csv`, so the stream produces a mix of coupon decisions and suppressed decisions instead of replaying a fixed scenario. It clears only the demo's Kafka topics and Redis activity counters on startup; the rule artifact and source data are untouched. Press `Ctrl-C` to stop the application and local infrastructure. Set `KEEP_INFRA=1` to leave Kafka and Redis running, or `SIMULATOR_INTERVAL=1` to increase the event rate.
+Then open <http://127.0.0.1:5000/viewer>. The launcher continuously samples
+real products and qualifying association pairs from `RULES_PATH` (falling back
+to `app/rules.csv`), so the stream produces a mix of coupon decisions and
+suppressed decisions instead of replaying a fixed scenario. It clears only the
+demo's Kafka topics and Redis activity counters on startup; the rule artifact
+and source data are untouched. Press `Ctrl-C` to stop the application and local
+infrastructure. Set `KEEP_INFRA=1` to leave Kafka and Redis running, or
+`SIMULATOR_INTERVAL=1` to increase the event rate.
 
 Runtime logs are retained under `.runtime/live/` for troubleshooting.
 
-The storefront at <http://127.0.0.1:5000/> now publishes its own keyed shopper events and consumes only coupon decisions for that browser's customer/session. Its Coupon desk shows the issued percentage, an illustrative savings amount in Indian rupees (INR), coupon ID, supporting cart item, dwell time, lift, and confidence. Add a product, choose a recommendation, and use **Test 55s hesitation** to run the targeted decision loop for that session; then use **Add … & apply …% off** to demonstrate the customer-facing basket change. The engine also requires minimum lift, confidence, and support thresholds, so dwell time alone is not enough. Prices are explicitly illustrative because the Instacart source contains purchase history, not retail prices; production pricing should come from the catalog service.
+The storefront at <http://127.0.0.1:5000/> publishes keyed shopper events and
+consumes only coupon decisions for that browser's shopper/session. Add a
+product, open a suggested pairing for at least 45 seconds, then navigate away
+to publish measured dwell time. A qualifying offer appears in the basket
+drawer and the Signal Room shows its rule and dwell evidence. The engine also
+requires minimum lift, confidence, and support thresholds, so dwell time alone
+is not enough. Prices are explicitly illustrative because Instacart contains
+purchase history rather than retail prices.
 
 For a presentation script, see [`docs/demo_walkthrough.md`](docs/demo_walkthrough.md).
 
@@ -112,7 +126,10 @@ In a second terminal, publish the deterministic hesitation scenario:
 uv run python -m pipeline.producer
 ```
 
-The consumer should print one `coupon_issued` JSON event for `Corn Tortillas`: the shopper has `Organic Hass Avocado` in the cart, dwells for 47 seconds, and the current rule snapshot contains a qualifying association.
+The producer deterministically selects the strongest pair in `RULES_PATH` that
+passes the configured lift, confidence, and support thresholds. The consumer
+should print one `coupon_issued` JSON event for its consequent after a seeded
+47-second dwell.
 
 Stop local infrastructure with:
 
@@ -120,9 +137,20 @@ Stop local infrastructure with:
 docker compose -f infra/docker-compose.yml down
 ```
 
-## Important limitation
+## Historical rule source
 
-`app/rules.csv` is a temporary artifact from the original prototype. Its old notebook flattened multi-item rules incorrectly. The new loader deduplicates directed pairs for deterministic demonstration only; the replacement Spark batch job must be built before treating the rule snapshot as a valid analytical result.
+`app/rules.csv` remains the legacy fallback used by the zero-setup demo. For a
+measured run, point the complete stack at a successful Spark output; the same
+artifact is then loaded into Redis, sampled by the simulator, and used as the
+marketplace's versioned cold-start prior:
+
+```bash
+RULES_PATH=data/processed/bootstrap/<run-id>/rules_serving.csv ./start.sh
+```
+
+The marketplace reads the Spark `run_id` column as its `snapshot_version`.
+After that cold start, browser events update the adaptive ranking used by later
+requests. The legacy CSV should not be presented as a newly measured result.
 
 The architecture, event contract, milestones, and unresolved decisions are in [`docs/architecture.md`](docs/architecture.md) and [`.scratch/realtime-contextual-mba/map.md`](.scratch/realtime-contextual-mba/map.md).
 
@@ -136,8 +164,9 @@ shopper, product-response, and cart-pair features. A deterministic LinUCB policy
 learns only after feedback can be matched to an already-recorded impression.
 
 The supported feedback events are recommendation clicks, cart additions and
-removals, coupon applications, and completed checkouts. Duplicate event IDs do
-not train twice. Coupon quality, supporting-cart, already-in-cart, and frequency
+removals, coupon applications, and completed checkouts. The latest 50,000
+successfully applied event IDs do not train twice. Coupon quality,
+supporting-cart, already-in-cart, and frequency
 rules run before the bandit and cannot be overridden by a learned score. If the
 learning-state adapter is unavailable, candidates remain usable in historical
 prior order and the response identifies `historical_fallback` mode.
@@ -158,4 +187,6 @@ checkpoint location. PySpark is deliberately imported only by the streaming
 entry point, so routine Flask startup and unit tests do not require Spark. The
 current reference adaptive store is process-local; a production deployment
 must replace it with a shared durable state adapter before independently scaled
-Flask and Spark processes can share learning state.
+Flask and Spark processes can share learning state. Browser events retain
+display names but are normalized to numeric catalog IDs before adaptive state
+is updated.

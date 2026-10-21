@@ -43,8 +43,8 @@ The command refuses to overwrite an existing run directory. Outputs are under
 - `baskets.parquet` and `baskets.json`, retaining the full `items` arrays;
 - `rules.parquet` and `rules.json`, retaining `antecedent` and `consequent`
   arrays after explicitly filtering to one-item directions;
-- `rules_serving.csv`, a product-name rule snapshot accepted by the existing
-  Redis loader;
+- `rules_serving.csv`, a catalog-ID rule snapshot with display names, accepted
+  by both the marketplace and Redis loader;
 - `als_candidates.parquet` and `als_candidates.json` when ALS can train;
 - `validation.json` and `manifest.json` for machine-readable evidence.
 
@@ -67,6 +67,17 @@ uv run --no-sync python -m pipeline.load_rules \
 
 This preserves the separation between Spark as the analytical engine and
 Redis as the low-latency serving layer.
+
+To run the complete marketplace, simulator, and coupon engine from the same
+Spark snapshot, pass the serving artifact to the launcher:
+
+```bash
+RULES_PATH=data/processed/bootstrap/<run-id>/rules_serving.csv ./start.sh
+```
+
+Flask reads the artifact's `run_id` as the adaptive candidate
+`snapshot_version`; `pipeline.load_rules` and the live simulator consume that
+same `RULES_PATH` environment variable.
 
 ## Local Spark installation
 

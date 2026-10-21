@@ -16,9 +16,15 @@ labelled as illustrative.
 Recommendation APIs rank historical rule or aisle candidates through the
 adaptive service when shopper and session identity are present. Each decision
 returns a snapshot version, policy version, policy mode, and impression ID.
-The browser carries that impression ID into recommendation feedback. Product,
-cart, coupon, search, and checkout events share the same product-name policy
-keys, with numeric catalog IDs retained as metadata.
+The browser carries that impression ID into recommendation feedback. Numeric
+catalog IDs are the canonical identity used by historical rules, live stream
+normalization, adaptive features, cart state, and checkout; product names are
+retained for display and coupon-rule evidence.
+
+Setting `RULES_PATH` to a Spark run's `rules_serving.csv` makes that measured
+artifact the marketplace, Redis loader, and simulator's shared historical
+prior. Its `run_id` becomes the adaptive `snapshot_version`; the legacy
+`app/rules.csv` is only the zero-setup fallback.
 
 Browser acceptance was exercised in Chromium at desktop and 375 px widths:
 
@@ -29,9 +35,15 @@ Browser acceptance was exercised in Chromium at desktop and 375 px widths:
 - verify no horizontal overflow at 375 px;
 - visually inspect the catalog, mobile market, and product page.
 
-Result: `2 passed (5.1s)`. The run also caught and led to a fix for slow offline
+The final run used the canonical-ID Spark artifact as `RULES_PATH` and completed
+as `2 passed (4.5s)`. An earlier run also caught and led to a fix for slow offline
 telemetry: Kafka publication now uses a short fail-fast circuit, so an absent
 live stack does not delay local shopping or checkout.
+
+The live Kafka/Redis demonstration issued an `Organic Raspberries` → `Bag of
+Organic Bananas` coupon from the same Spark snapshot. The Redis coupon ledger
+accepted its first checkout claim and rejected the second, proving one-time
+server-authoritative redemption.
 
 ## Spark historical bootstrap
 
@@ -43,10 +55,10 @@ The bounded real-data command was:
   --min-support 0.005 --min-confidence 0.05 \
   --num-partitions 2 \
   --als-rank 8 --als-max-iter 3 --als-top-k 10 \
-  --run-id final-bounded-real-20261021
+  --run-id final-bounded-real-canonical-20261021
 ```
 
-Spark 4.0.1 completed the run in 39.564 seconds. It validated all six source
+Spark 4.0.1 completed the run in 38.267 seconds. It validated all six source
 tables with zero violations, selected 1,000 orders, constructed 978 non-empty
 baskets with 9,963 transactions, mined 298 association rules, exported 286
 one-item directional rules, and trained implicit ALS across 973 users and
@@ -83,7 +95,7 @@ changes the subsequent ranking and moves the policy from
 
 ```text
 uv sync                                      passed
-uv run pytest -q                             44 passed, 1 skipped
+uv run pytest -q                             52 passed, 1 skipped
 Docker Spark fixture artifact seam           passed
 Docker Spark bounded real-data run           passed
 Adaptive deterministic replay                ranking changed
@@ -103,5 +115,7 @@ Spark environment.
 - Adaptive state and impressions are process-local in this reference build.
   Independently scaled Flask and streaming workers require a shared durable
   state adapter.
+- Feedback deduplication retains the latest 50,000 successfully applied event
+  IDs; a shared deployment must preserve the same explicit retention policy.
 - The bounded run is measured evidence, not a full-dataset benchmark. Use the
   documented full-mode command when final infrastructure capacity is known.

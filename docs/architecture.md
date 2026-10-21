@@ -50,7 +50,8 @@ All events are JSON objects with these fields:
 | `event_time` | ISO-8601 UTC timestamp |
 | `user_id` | Shopper identity used for stream state |
 | `session_id` | Session identity used to isolate carts and views |
-| `product_id` | Canonical product identity; required for product, cart, recommendation, and coupon events |
+| `product_id` | Display/product-rule identity; required for product, cart, recommendation, and coupon events |
+| `catalog_product_id` | Stable numeric catalog identity preferred by adaptive features and marketplace ranking |
 | `dwell_seconds` | Required for `product_view_ended`; optional when it can be derived later |
 | `quantity` | Optional quantity for cart events, defaulting to one |
 
@@ -71,8 +72,8 @@ and an exploration bonus. Each returned item includes these score components
 and per-feature contributions for auditability.
 
 The service writes the full displayed impression before it can consume click,
-cart, coupon, or checkout reward. It rejects unattributed and duplicate
-feedback. Candidate ordering falls back to the validated historical prior when
+cart, coupon, or checkout reward. It rejects unattributed feedback and duplicate
+IDs within its documented 50,000-event retention horizon. Candidate ordering falls back to the validated historical prior when
 the learning-state adapter is unavailable.
 
 Coupon controls do not form part of the reward model. Minimum lift, confidence,
@@ -84,7 +85,7 @@ making an unsafe coupon eligible.
 parses Kafka values through an explicit schema, converts the supplied ISO-8601
 time for event-time processing, applies a watermark, and configures the query's
 checkpoint directory. `AdaptiveForeachBatch` is the tested boundary that
-validates rows before updating live features. The reference in-memory store is
+validates rows and normalizes catalog IDs before updating live features. The reference in-memory store is
 suitable for deterministic coursework replay; separately deployed application
 and Spark processes need a shared durable adapter for production use.
 
