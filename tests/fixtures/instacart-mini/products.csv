@@ -1,0 +1,5 @@
+product_id,product_name,aisle_id,department_id
+1,Avocado,2,1
+2,Corn Tortillas,1,1
+3,Lime,2,1
+4,Salsa,1,1
