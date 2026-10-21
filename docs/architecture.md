@@ -46,13 +46,47 @@ All events are JSON objects with these fields:
 | Field | Meaning |
 |---|---|
 | `event_id` | Globally unique event identifier |
-| `event_type` | `product_view_started`, `product_view_ended`, `cart_item_added`, or `cart_item_removed` |
+| `event_type` | Product view/cart events plus `search_performed`, recommendation impression/click, coupon application, and checkout start/completion |
 | `event_time` | ISO-8601 UTC timestamp |
 | `user_id` | Shopper identity used for stream state |
 | `session_id` | Session identity used to isolate carts and views |
-| `product_id` | Canonical product identity; current demo uses representative names |
+| `product_id` | Canonical product identity; required for product, cart, recommendation, and coupon events |
 | `dwell_seconds` | Required for `product_view_ended`; optional when it can be derived later |
 | `quantity` | Optional quantity for cart events, defaulting to one |
+
+Search events require `query`. Checkout events require `order_id` and may carry
+`product_ids`. Recommendation feedback should carry the `impression_id` and
+`policy_version` returned by the ranking service so the reward is attributed to
+the exact displayed decision. The base identity and event-time fields remain
+required for every event.
+
+## Adaptive decision layer
+
+The historical artifact is a versioned candidate snapshot, not the permanent
+decision engine. `AdaptiveRankingService` starts from each candidate's prior
+score and derives bounded live features at four scopes: session/product,
+shopper/product, aggregate product response, and product pairs represented in
+the active cart. A deterministic disjoint LinUCB policy adds a learned estimate
+and an exploration bonus. Each returned item includes these score components
+and per-feature contributions for auditability.
+
+The service writes the full displayed impression before it can consume click,
+cart, coupon, or checkout reward. It rejects unattributed and duplicate
+feedback. Candidate ordering falls back to the validated historical prior when
+the learning-state adapter is unavailable.
+
+Coupon controls do not form part of the reward model. Minimum lift, confidence,
+and support; supporting-cart membership; target-not-in-cart; and one offer per
+shopper/product are enforced before ranking. This prevents exploration from
+making an unsafe coupon eligible.
+
+`pipeline.adaptive_streaming` is the Spark Structured Streaming entry point. It
+parses Kafka values through an explicit schema, converts the supplied ISO-8601
+time for event-time processing, applies a watermark, and configures the query's
+checkpoint directory. `AdaptiveForeachBatch` is the tested boundary that
+validates rows before updating live features. The reference in-memory store is
+suitable for deterministic coursework replay; separately deployed application
+and Spark processes need a shared durable adapter for production use.
 
 Coupon output events add `coupon_id`, `discount_percent`, `supporting_cart_item`, `lift`, `confidence`, `support`, and a `reason` object containing the dwell threshold and observed dwell time.
 

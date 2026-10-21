@@ -1,0 +1,33 @@
+{
+  "snapshot_version": "bootstrap-replay-v1",
+  "policy": {
+    "alpha": 0.05,
+    "historical_weight": 0.25
+  },
+  "request": {
+    "user_id": "replay-shopper",
+    "session_id": "replay-session",
+    "limit": 2
+  },
+  "candidates": [
+    {
+      "product_id": "bananas",
+      "snapshot_version": "bootstrap-replay-v1",
+      "prior_score": 0.60
+    },
+    {
+      "product_id": "berries",
+      "snapshot_version": "bootstrap-replay-v1",
+      "prior_score": 0.55
+    }
+  ],
+  "feedback": {
+    "event_id": "replay-click-1",
+    "event_type": "recommendation_clicked",
+    "event_time": "2026-10-21T12:00:01+00:00",
+    "user_id": "replay-shopper",
+    "session_id": "replay-session",
+    "product_id": "berries",
+    "impression_id": "$first"
+  }
+}
