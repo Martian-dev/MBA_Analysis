@@ -120,6 +120,19 @@ The existing notebook has a correctness defect: it converts every antecedent and
 
 For the first coupon policy, option 2 keeps the serving contract small and auditable. Rules should be deduplicated by `(antecedent, consequent)` using the strongest retained metric row, with the batch run ID and thresholds stored alongside the snapshot.
 
+## Implemented historical bootstrap
+
+`pipeline.spark_bootstrap` implements the replacement Spark job. It reads all
+six CSV tables with explicit schemas, validates required values, identifiers,
+domains, duplicate facts and foreign-key coverage, then writes a versioned run
+under `data/processed/bootstrap`. FP-Growth retains its itemset arrays and
+filters explicitly to one-item antecedents and consequents before deterministic
+pair deduplication. The job also exports implicit-feedback ALS candidates when
+the configured slice supports training. Each run includes Parquet, inspectable
+JSON, a Redis-loader-compatible rule CSV, and a manifest with sources,
+parameters, counts, runtime, Spark metadata and output paths. The exact local
+and Docker commands are in [`spark_bootstrap.md`](spark_bootstrap.md).
+
 ## Delivery phases
 
 1. **Contract and vertical slice** — the runnable Kafka/Redis/Python path in this repository.

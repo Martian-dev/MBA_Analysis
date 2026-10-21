@@ -4,6 +4,7 @@ This repository is evolving from a Flask market-basket demo into a hybrid batch 
 
 ## What to run
 
+- `./scripts/run_spark_bootstrap.sh` — reproducible Spark 4 historical bootstrap in Docker; writes validated, versioned FP-Growth and ALS artifacts.
 - `./start.sh` — one-shot launcher: verifies dependencies, starts Kafka/Redis, resets ephemeral demo state, loads the MBA rule artifact, starts the randomized clickstream, consumer, and viewer.
 - `bash scripts/run_live.sh` — recommended: continuous simulated clickstream plus the live Signal Room at `/viewer`.
 - `bash scripts/run_demo.sh` — finite three-event terminal demonstration; exits on its own.
@@ -33,6 +34,20 @@ recommendation impressions and clicks, cart changes, coupon lifecycle events,
 and checkout events through `POST /api/events`. When Kafka or Redis is offline,
 catalog, basket, and checkout behavior remain usable locally; live offers and
 Signal Room evidence resume when the stream stack is available.
+
+## Build the historical prior with Spark
+
+The replacement batch job reads all six Instacart tables with explicit
+schemas, validates the selected data, preserves basket arrays, mines rules
+with Spark MLlib FP-Growth, and exports implicit-feedback ALS candidates:
+
+```bash
+./scripts/run_spark_bootstrap.sh --mode sample --sample-orders 10000
+```
+
+See [`docs/spark_bootstrap.md`](docs/spark_bootstrap.md) for full-data tuning,
+artifact contracts, the deterministic acceptance fixture, and the command for
+publishing a versioned Spark rule snapshot into Redis.
 
 ## Run the first vertical slice
 
