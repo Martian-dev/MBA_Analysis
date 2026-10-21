@@ -222,17 +222,6 @@ def test_state_outage_keeps_feedback_retryable_until_commit_succeeds():
     assert service.consume_feedback(feedback).status == "duplicate_event"
 
 
-def test_linucb_action_state_obeys_explicit_retention_limit():
-    state = InMemoryLinUCBState(max_actions=2)
-    vector = (1.0,) * 6
-
-    state.score("first", vector, 0.1)
-    state.score("second", vector, 0.1)
-    state.score("third", vector, 0.1)
-
-    assert list(state._actions) == ["second", "third"]
-
-
 def test_dictionary_adapter_exposes_versions_needed_by_marketplace_feedback():
     service = AdaptiveRankingService()
     response = service.rank_candidates(

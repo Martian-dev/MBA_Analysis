@@ -11,9 +11,11 @@ import sys
 
 import pytest
 from kafka.errors import KafkaError
+from redis.exceptions import ConnectionError as RedisConnectionError
 
 from app import main
 from pipeline.adaptive import create_adaptive_service
+from pipeline.adaptive_redis import create_redis_adaptive_service
 
 
 @pytest.fixture()
@@ -143,6 +145,24 @@ def test_product_recommendations_adapt_after_http_feedback(client, monkeypatch):
     legacy_route = client.get(f"/api/recommend?product_id=24852&{identity[1:]}").get_json()
     assert legacy_route["recommendation"]["impression_id"]
     assert all(item["impression_id"] for item in legacy_route["recommendations"])
+
+
+def test_product_api_uses_historical_order_when_shared_redis_is_offline(client, monkeypatch):
+    class UnavailableRedis:
+        def incr(self, key):
+            del key
+            raise RedisConnectionError("redis offline")
+
+    monkeypatch.setattr(
+        main, "adaptive_service", create_redis_adaptive_service(UnavailableRedis())
+    )
+
+    response = client.get(
+        "/api/products/24852?user_id=offline-shopper&session_id=offline-session"
+    )
+
+    assert response.status_code == 200
+    assert response.get_json()["recommendation"]["policy_mode"] == "historical_fallback"
 
 
 def test_event_api_validates_and_publishes_through_existing_stream_seam(client, monkeypatch):
