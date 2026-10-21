@@ -34,7 +34,7 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const response = await fetch('/api/checkout', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)}); const data = await response.json();
             if (!response.ok) throw new Error(data.error || 'The order could not be saved.');
-            await Market.publish('checkout_completed', {order_id: orderId, product_ids: cart.map(item => item.product_name), catalog_product_ids: cart.map(item => item.product_id), basket_quantity: cart.reduce((sum, item) => sum + item.quantity, 0), total_inr: data.order.total_inr}).catch(() => {});
+            Market.publish('checkout_completed', {order_id: orderId, product_ids: cart.map(item => item.product_name), catalog_product_ids: cart.map(item => item.product_id), basket_quantity: cart.reduce((sum, item) => sum + item.quantity, 0), total_inr: data.order.total_inr}, true).catch(() => {});
             Market.clearOrder(); sessionStorage.removeItem(pendingKey); location.assign(`/order/${encodeURIComponent(orderId)}?user_id=${encodeURIComponent(Market.identity.userId)}`);
         } catch (error) { errorBox.textContent = `${error.message} Check the server and try again.`; errorBox.hidden = false; submit.disabled = false; submit.classList.remove('is-loading'); submit.firstChild.textContent = 'Confirm demo order '; }
     });

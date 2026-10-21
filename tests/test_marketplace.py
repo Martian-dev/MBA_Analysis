@@ -6,6 +6,7 @@ import json
 from datetime import datetime, timezone
 
 import pytest
+from kafka.errors import KafkaError
 
 from app import main
 from pipeline.adaptive import create_adaptive_service
@@ -77,7 +78,7 @@ def test_cart_recommendation_accepts_catalog_ids_and_excludes_cart(client):
 def test_product_recommendations_adapt_after_http_feedback(client, monkeypatch):
     class Future:
         def get(self, timeout):
-            assert timeout == 10
+            assert timeout == 2
 
     class Producer:
         def send(self, topic, key, value):
@@ -119,7 +120,7 @@ def test_event_api_validates_and_publishes_through_existing_stream_seam(client, 
 
     class Future:
         def get(self, timeout):
-            assert timeout == 10
+            assert timeout == 2
 
     class Producer:
         def send(self, topic, key, value):
@@ -142,6 +143,33 @@ def test_event_api_validates_and_publishes_through_existing_stream_seam(client, 
     assert sent[0][1] == b"shopper-test"
     assert sent[0][2]["catalog_product_id"] == 24852
     assert client.post("/api/events", json={"event_type": "cart_item_added"}).status_code == 400
+
+
+def test_event_api_fails_fast_during_kafka_outage(client, monkeypatch):
+    send_calls = []
+
+    class Producer:
+        def send(self, topic, key, value):
+            send_calls.append(value["event_id"])
+            raise KafkaError("broker unavailable")
+
+    monkeypatch.setattr(main, "event_producer", lambda: Producer())
+    monkeypatch.setattr(main.time, "monotonic", lambda: 100.0)
+    monkeypatch.setattr(main, "_event_retry_after", 0.0)
+    event = {
+        "event_id": "offline-event-1",
+        "event_type": "cart_item_added",
+        "event_time": datetime.now(timezone.utc).isoformat(),
+        "user_id": "offline-shopper",
+        "session_id": "offline-session",
+        "product_id": "Banana",
+        "quantity": 1,
+    }
+
+    assert client.post("/api/events", json=event).status_code == 503
+    event["event_id"] = "offline-event-2"
+    assert client.post("/api/events", json=event).status_code == 503
+    assert send_calls == ["offline-event-1"]
 
 
 def test_checkout_persists_a_demo_order_and_owner_can_look_it_up(client):

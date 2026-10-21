@@ -9,6 +9,7 @@ import re
 import secrets
 import sys
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -47,6 +48,8 @@ products_by_name: dict[str, dict[str, Any]] = {}
 departments: list[dict[str, Any]] = []
 aisles: list[dict[str, Any]] = []
 _event_producer = None
+_event_publish_lock = threading.Lock()
+_event_retry_after = 0.0
 _order_lock = threading.Lock()
 _adaptive_lock = threading.Lock()
 adaptive_service = create_adaptive_service()
@@ -139,6 +142,8 @@ def event_producer() -> KafkaProducer:
         _event_producer = KafkaProducer(
             bootstrap_servers=os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9092"),
             value_serializer=JsonSerializer(),
+            bootstrap_timeout_ms=1_000,
+            max_block_ms=2_000,
         )
     return _event_producer
 
@@ -282,17 +287,23 @@ def activity_snapshot():
 
 @app.post("/api/events")
 def publish_storefront_event():
+    global _event_retry_after
     payload = request.get_json(silent=True)
     try:
         event = validate_event(payload)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
-    try:
-        event_producer().send(
-            EVENTS_TOPIC, key=event["user_id"].encode("utf-8"), value=event
-        ).get(timeout=10)
-    except KafkaError:
-        return jsonify({"error": "Kafka is unavailable. Start the live stack."}), 503
+    with _event_publish_lock:
+        if time.monotonic() < _event_retry_after:
+            return jsonify({"error": "Kafka is unavailable. Start the live stack."}), 503
+        try:
+            event_producer().send(
+                EVENTS_TOPIC, key=event["user_id"].encode("utf-8"), value=event
+            ).get(timeout=2)
+        except KafkaError:
+            _event_retry_after = time.monotonic() + 5
+            return jsonify({"error": "Kafka is unavailable. Start the live stack."}), 503
+        _event_retry_after = 0.0
     with _adaptive_lock:
         feedback = adaptive_service.observe_event(event)
     return jsonify({
