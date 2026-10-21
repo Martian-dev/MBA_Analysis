@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Order confirmation · Basket Signal</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+</head>
+<body data-order-id="{{ order_id }}">
+    {% include '_market_header.html' %}
+    <main id="main-content" class="confirmation-page">
+        <section class="confirmation-card" data-order-confirmation aria-live="polite">
+            <div class="confirmation-mark" aria-hidden="true"><svg viewBox="0 0 48 48"><path d="m12 25 8 8 17-19"/></svg></div>
+            <p class="overline">Loading order</p><h1>Checking the market ledger…</h1>
+        </section>
+    </main>
+    {% include '_cart_drawer.html' %}
+    <script src="{{ url_for('static', filename='js/marketplace.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/order.js') }}"></script>
+</body>
+</html>
