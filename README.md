@@ -7,7 +7,30 @@ This repository is evolving from a Flask market-basket demo into a hybrid batch 
 - `./start.sh` — one-shot launcher: verifies dependencies, starts Kafka/Redis, resets ephemeral demo state, loads the MBA rule artifact, starts the randomized clickstream, consumer, and viewer.
 - `bash scripts/run_live.sh` — recommended: continuous simulated clickstream plus the live Signal Room at `/viewer`.
 - `bash scripts/run_demo.sh` — finite three-event terminal demonstration; exits on its own.
-- `uv run flask --app app.main run` — storefront and viewer only; live infrastructure must already be running for viewer data.
+- `uv run --no-sync flask --app app.main run` — marketplace and Signal Room only; live infrastructure must already be running for streaming events.
+
+## Browse the grocery marketplace
+
+The storefront at <http://127.0.0.1:5000/> reads the complete local
+`InstacartMBA/products.csv` catalog (49,688 products) and joins aisle and
+department metadata at startup. It supports server-side search, filters, and
+pagination; deep-linked product pages at `/product/<product_id>`; a persistent
+browser basket; live coupon application; and a simulated checkout at
+`/checkout`. Confirmed demo orders are appended locally to
+`.runtime/marketplace/orders.jsonl` and can be reopened only by the shopper
+identity that created them.
+
+The Instacart source has no price data. Every INR amount shown by the market is
+stable but illustrative, and the checkout does not charge a payment method,
+reserve inventory, or schedule delivery. Set `INSTACART_DATA_DIR` to override
+the source-data directory and `ORDER_STORE_PATH` through Flask configuration
+when embedding or testing the application.
+
+The browser publishes product views and real dwell time, searches,
+recommendation impressions and clicks, cart changes, coupon lifecycle events,
+and checkout events through `POST /api/events`. When Kafka or Redis is offline,
+catalog, basket, and checkout behavior remain usable locally; live offers and
+Signal Room evidence resume when the stream stack is available.
 
 ## Run the first vertical slice
 
