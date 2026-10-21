@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 import pytest
 
 from app import main
+from pipeline.adaptive import create_adaptive_service
 
 
 @pytest.fixture()
@@ -71,6 +72,46 @@ def test_cart_recommendation_accepts_catalog_ids_and_excludes_cart(client):
     assert all(product["impression_id"] == payload["impression_id"] for product in recommendations)
     assert payload["policy_mode"] in {"historical_cold_start", "adaptive_linucb"}
     assert payload["policy_version"] == "linucb-v1"
+
+
+def test_product_recommendations_adapt_after_http_feedback(client, monkeypatch):
+    class Future:
+        def get(self, timeout):
+            assert timeout == 10
+
+    class Producer:
+        def send(self, topic, key, value):
+            return Future()
+
+    monkeypatch.setattr(main, "adaptive_service", create_adaptive_service(alpha=0.05, historical_weight=0.25))
+    monkeypatch.setattr(main, "event_producer", lambda: Producer())
+    identity = "?user_id=adaptive-shopper&session_id=adaptive-session"
+    first = client.get(f"/api/products/24852{identity}").get_json()
+    first_names = [item["product_name"] for item in first["related_products"]]
+    rewarded = first["related_products"][1]
+    assert first["recommendation"]["policy_mode"] == "historical_cold_start"
+
+    feedback = client.post("/api/events", json={
+        "event_id": "market-feedback-1",
+        "event_type": "recommendation_clicked",
+        "event_time": datetime.now(timezone.utc).isoformat(),
+        "user_id": "adaptive-shopper",
+        "session_id": "adaptive-session",
+        "product_id": rewarded["product_name"],
+        "impression_id": rewarded["impression_id"],
+    })
+    assert feedback.status_code == 202
+    assert feedback.get_json()["adaptive_feedback_status"] == "learned"
+
+    second = client.get(f"/api/products/24852{identity}").get_json()
+    second_names = [item["product_name"] for item in second["related_products"]]
+    assert second["recommendation"]["policy_mode"] == "adaptive_linucb"
+    assert second_names[0] == rewarded["product_name"]
+    assert second_names != first_names
+
+    legacy_route = client.get(f"/api/recommend?product_id=24852&{identity[1:]}").get_json()
+    assert legacy_route["recommendation"]["impression_id"]
+    assert all(item["impression_id"] for item in legacy_route["recommendations"])
 
 
 def test_event_api_validates_and_publishes_through_existing_stream_seam(client, monkeypatch):

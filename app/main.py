@@ -186,6 +186,61 @@ def _related_products(product: dict[str, Any], limit: int = 6) -> list[dict[str,
     return chosen
 
 
+def _adaptive_rank_products(
+    products: list[dict[str, Any]],
+    *,
+    user_id: str | None,
+    session_id: str | None,
+    cart_products: list[dict[str, Any]] | None = None,
+    limit: int = 6,
+) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    """Rank historical candidates when browser identity is available."""
+    if not products or not user_id or not session_id:
+        return products[:limit], None
+    candidates = [
+        {
+            "product_id": item["product_name"],
+            "prior_score": float(item.get("lift") or (1 / (index + 1))),
+            "snapshot_version": "marketplace-rules-v1",
+            "catalog_product_id": item["product_id"],
+            **(
+                {"supporting_product_id": item["supporting_product_name"]}
+                if item.get("supporting_product_name")
+                else {}
+            ),
+        }
+        for index, item in enumerate(products)
+    ]
+    with _adaptive_lock:
+        decision = adaptive_service.rank_candidates(
+            user_id=user_id,
+            session_id=session_id,
+            candidates=candidates,
+            snapshot_version="marketplace-rules-v1",
+            cart_product_ids=[product["product_name"] for product in (cart_products or [])],
+            limit=limit,
+        )
+    by_name = {item["product_name"]: item for item in products}
+    ranked: list[dict[str, Any]] = []
+    for ranked_item in decision["items"]:
+        product = by_name[ranked_item["product_id"]]
+        product["impression_id"] = decision["impression_id"]
+        product["policy_mode"] = decision["policy_mode"]
+        product["adaptive_score"] = ranked_item["score"]
+        product["adaptive_explanation"] = ranked_item["explanation"]
+        ranked.append(product)
+    metadata = {
+        key: decision[key]
+        for key in ("impression_id", "policy_version", "policy_mode", "snapshot_version")
+    }
+    return ranked, metadata
+
+
+def _query_cart_products() -> list[dict[str, Any]]:
+    values = request.args.getlist("cart_product_id")
+    return [product for value in values if (product := _product_for(value))]
+
+
 @app.get("/")
 def home():
     return render_template("index.html")
@@ -327,7 +382,17 @@ def get_product(product_id: int):
     product = products_by_id.get(product_id)
     if product is None:
         return jsonify({"error": "Product not found"}), 404
-    return jsonify({"product": _public_product(product), "related_products": _related_products(product)})
+    related, recommendation = _adaptive_rank_products(
+        _related_products(product, 12),
+        user_id=request.args.get("user_id"),
+        session_id=request.args.get("session_id"),
+        cart_products=_query_cart_products(),
+    )
+    return jsonify({
+        "product": _public_product(product),
+        "related_products": related,
+        "recommendation": recommendation,
+    })
 
 
 @app.get("/api/recommend")
@@ -335,7 +400,18 @@ def get_recommendations():
     product = _product_for(request.args.get("product_id") or request.args.get("item"))
     if product is None:
         return jsonify({"error": "A valid product_id or item is required"}), 400
-    return jsonify({"product": _public_product(product), "recommendations": _related_products(product, 4)})
+    related, recommendation = _adaptive_rank_products(
+        _related_products(product, 8),
+        user_id=request.args.get("user_id"),
+        session_id=request.args.get("session_id"),
+        cart_products=_query_cart_products(),
+        limit=4,
+    )
+    return jsonify({
+        "product": _public_product(product),
+        "recommendations": related,
+        "recommendation": recommendation,
+    })
 
 
 @app.post("/api/cart-recommend")
@@ -366,40 +442,15 @@ def get_cart_recommendations():
 
     user_id = str(data.get("user_id") or "marketplace-anonymous")
     session_id = str(data.get("session_id") or "marketplace-session")
-    candidates = [
-        {
-            "product_id": item["product_name"],
-            "prior_score": float(item.get("lift") or (1 / (index + 1))),
-            "snapshot_version": "marketplace-rules-v1",
-            "supporting_product_id": item["supporting_product_name"],
-            "catalog_product_id": item["product_id"],
-        }
-        for index, item in enumerate(result)
-    ]
-    with _adaptive_lock:
-        decision = adaptive_service.rank_candidates(
-            user_id=user_id,
-            session_id=session_id,
-            candidates=candidates,
-            snapshot_version="marketplace-rules-v1",
-            cart_product_ids=[product["product_name"] for product in cart_products],
-            limit=6,
-        )
-    by_name = {item["product_name"]: item for item in result}
-    ranked = []
-    for ranked_item in decision["items"]:
-        product = by_name[ranked_item["product_id"]]
-        product["impression_id"] = decision["impression_id"]
-        product["policy_mode"] = decision["policy_mode"]
-        product["adaptive_score"] = ranked_item["score"]
-        product["adaptive_explanation"] = ranked_item["explanation"]
-        ranked.append(product)
+    ranked, recommendation = _adaptive_rank_products(
+        result,
+        user_id=user_id,
+        session_id=session_id,
+        cart_products=cart_products,
+    )
     return jsonify({
         "recommendations": ranked,
-        "impression_id": decision["impression_id"],
-        "policy_version": decision["policy_version"],
-        "policy_mode": decision["policy_mode"],
-        "snapshot_version": decision["snapshot_version"],
+        **(recommendation or {}),
     })
 
 
