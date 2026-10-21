@@ -301,10 +301,6 @@ class LiveFeatureStore:
             _bounded(pair_affinity / 4.0, lower=-1.0),
         )
 
-    def record_impression(self, user_id: str, session_id: str, product_ids: Iterable[str]) -> None:
-        for product_id in product_ids:
-            self._product_impressions[product_id] += 1
-
     def cart_product_ids(self, user_id: str, session_id: str) -> frozenset[str]:
         return frozenset(self._carts[(user_id, session_id)])
 
@@ -313,7 +309,9 @@ class LiveFeatureStore:
         user_id = str(event["user_id"])
         session_id = str(event["session_id"])
         product_id = event.get("product_id")
-        if event_type == "product_view_ended" and product_id:
+        if event_type == "recommendation_impression" and product_id:
+            self._product_impressions[str(product_id)] += 1
+        elif event_type == "product_view_ended" and product_id:
             self._adjust(user_id, session_id, str(product_id), 0.25)
         elif event_type == "recommendation_clicked" and product_id:
             self._adjust(user_id, session_id, str(product_id), 1.0)
@@ -503,11 +501,6 @@ class AdaptiveRankingService:
         # This write deliberately precedes returning the decision. Feedback is
         # never eligible to train against an unrecorded impression.
         self.impressions.record(recorded)
-        self.features.record_impression(
-            request.user_id,
-            request.session_id,
-            (item.product_id for item in items),
-        )
         for candidate, _, _ in selected:
             if candidate.offer_type == "coupon":
                 self.guardrails.record_issued(request.user_id, candidate.product_id)

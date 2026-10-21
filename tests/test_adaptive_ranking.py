@@ -251,3 +251,32 @@ def test_candidate_snapshot_rejects_mixed_versions_and_non_finite_priors():
             "v1", [candidate("p1", float("nan"), snapshot_version="v1")]
         )
 
+
+def test_client_impressions_drive_the_live_product_response_feature():
+    service = AdaptiveRankingService()
+    snapshot = CandidateSnapshot.from_records(
+        "v1", [candidate("p1", 0.5, snapshot_version="v1")]
+    )
+    first = service.rank(RankingRequest("shopper-1", "session-1"), snapshot)
+    for index in range(2):
+        service.observe_event(
+            event(
+                f"impression-{index}",
+                "recommendation_impression",
+                "p1",
+                impression_id=first.impression_id,
+            )
+        )
+    service.observe_event(
+        event(
+            "click-1",
+            "recommendation_clicked",
+            "p1",
+            impression_id=first.impression_id,
+        )
+    )
+
+    second = service.rank(RankingRequest("shopper-1", "session-1"), snapshot)
+
+    assert second.items[0].explanation["live_features"]["product_response_rate"] == 0.25
+
