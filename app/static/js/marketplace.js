@@ -8,6 +8,7 @@
     const listeners = new Set();
     let activitySource = null;
     let drawerReturnFocus = null;
+    let cartRecommendationRequest = null;
 
     const safeParse = (value, fallback) => {
         try { return JSON.parse(value) ?? fallback; } catch (_) { return fallback; }
@@ -172,21 +173,45 @@
         }
     }
 
+    async function getCartRecommendations(cartItems = getCart()) {
+        const cartIds = cartItems.map(item => Number(item.product_id));
+        if (!cartIds.length) return {recommendations: []};
+        const requestKey = [...cartIds].sort((left, right) => left - right).join(',');
+        if (cartRecommendationRequest?.key === requestKey) return cartRecommendationRequest.promise;
+
+        const promise = fetch('/api/cart-recommend', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({cart: cartIds, user_id: identity.userId, session_id: identity.sessionId}),
+        }).then(response => {
+            if (!response.ok) throw new Error('Basket recommendations unavailable');
+            return response.json();
+        });
+        cartRecommendationRequest = {key: requestKey, promise};
+        try { return await promise; }
+        finally {
+            if (cartRecommendationRequest?.promise === promise) cartRecommendationRequest = null;
+        }
+    }
+
+    function publishRecommendationImpression(product, placement) {
+        return publish('recommendation_impression', {
+            product_id: product.product_name, catalog_product_id: product.product_id,
+            product_name: product.product_name, impression_id: product.impression_id,
+            policy_version: product.policy_version, snapshot_version: product.snapshot_version,
+            placement, supporting_product_id: product.supporting_product_id,
+        });
+    }
+
     async function fetchPairings() {
         const section = document.querySelector('[data-cart-pairings]');
         const list = document.querySelector('[data-pairing-list]');
         if (!section || !list) return;
         try {
-            const response = await fetch('/api/cart-recommend', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({cart: getCart().map(item => item.product_id), user_id: identity.userId, session_id: identity.sessionId})});
-            const data = await response.json(); const pairings = data.recommendations?.slice(0, 3) || [];
+            const data = await getCartRecommendations(); const pairings = data.recommendations?.slice(0, 3) || [];
             section.hidden = !pairings.length;
             list.innerHTML = pairings.map(product => `<div class="mini-pairing">${productArtwork(product)}<a href="/product/${product.product_id}" data-product-link data-source="cart_pairing" data-product-id="${product.product_id}" data-product-name="${escapeHtml(product.product_name)}" data-impression-id="${escapeHtml(product.impression_id)}" data-policy-version="${escapeHtml(product.policy_version || '')}" data-snapshot-version="${escapeHtml(product.snapshot_version || '')}"><strong>${escapeHtml(product.product_name)}</strong><small>with ${escapeHtml(product.supporting_product_name)}</small></a><button type="button" data-add-product='${escapeHtml(JSON.stringify(product))}' data-source="cart_pairing" aria-label="Add ${escapeHtml(product.product_name)}">${icon('plus')}</button></div>`).join('');
-            pairings.forEach(product => publish('recommendation_impression', {
-                product_id: product.product_name, catalog_product_id: product.product_id,
-                product_name: product.product_name, impression_id: product.impression_id,
-                policy_version: product.policy_version, snapshot_version: product.snapshot_version,
-                placement: 'cart_drawer', supporting_product_id: product.supporting_product_id,
-            }).catch(() => {}));
+            pairings.forEach(product => publishRecommendationImpression(product, 'cart_drawer').catch(() => {}));
         } catch (_) { section.hidden = true; }
     }
 
@@ -271,7 +296,8 @@
 
     window.BasketSignal = {
         identity, escapeHtml, money, titleCase, icon, productArtwork, productCard,
-        publish, toast, addProduct, changeQuantity, getCart, getCoupons, totals, persist,
+        publish, publishRecommendationImpression, getCartRecommendations,
+        toast, addProduct, changeQuantity, getCart, getCoupons, totals, persist,
         subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
         clearOrder() { cart = {}; coupons = {}; localStorage.removeItem(CART_KEY); localStorage.removeItem(COUPON_KEY); persist(); },
         newOrderId() { return `BS-${(globalThis.crypto?.randomUUID?.() || randomId('order')).replace(/[^A-Za-z0-9-]/g, '')}`; },
