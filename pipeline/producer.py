@@ -8,7 +8,7 @@ import json
 import os
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 from kafka import KafkaProducer
 
@@ -64,11 +64,13 @@ def hesitation_scenario(
 ) -> list[dict[str, object]]:
     user_id = "demo-user-1"
     session_id = "demo-session-1"
-    return [
+    trace = [
         event("cart_item_added", antecedent, user_id, session_id),
         event("product_view_started", consequent, user_id, session_id),
         event("product_view_ended", consequent, user_id, session_id, dwell_seconds=47),
     ]
+    trace[1]['event_time'] = (datetime.fromisoformat(trace[2]['event_time']) - timedelta(seconds=47)).isoformat()
+    return trace
 
 
 def main() -> None:

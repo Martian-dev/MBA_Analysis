@@ -1,0 +1,44 @@
+{
+  "coupon_roi": "not_measured_requires_randomized_real_shopper_outcomes",
+  "evaluated_baskets": 1889,
+  "hybrid_minus_popularity_ndcg_95ci": [
+    0.005497145190943649,
+    0.014415185277304532
+  ],
+  "k": 10,
+  "metrics": {
+    "association_rules": {
+      "catalog_coverage": 0.012939907852171357,
+      "hit_rate": 0.29910005293806247,
+      "ndcg": 0.0679439442917189,
+      "precision": 0.040338803599788246,
+      "recall": 0.06795712604019928
+    },
+    "popularity": {
+      "catalog_coverage": 0.0006862072345848446,
+      "hit_rate": 0.32292218104817366,
+      "ndcg": 0.06979518675149853,
+      "precision": 0.040921122286924294,
+      "recall": 0.0722926628946334
+    },
+    "rules_with_popularity_fallback": {
+      "catalog_coverage": 0.012939907852171357,
+      "hit_rate": 0.3451561672842774,
+      "ndcg": 0.07942015661567854,
+      "precision": 0.04520910534674431,
+      "recall": 0.08273743468825619
+    }
+  },
+  "mining": {
+    "min_confidence": 0.05,
+    "min_count": 5,
+    "min_lift": 1.0,
+    "min_support": 0.001
+  },
+  "protocol": "last-order holdout; deterministic half-basket completion",
+  "rule_count": 3399,
+  "run_id": "evaluated-74cba8eed9ce98f3",
+  "seed": 42,
+  "split_sha256": "74cba8eed9ce98f378c3ff460b02ee3b509ebf70bbc57cce0ad34312b92efb53",
+  "training_baskets": 30623
+}

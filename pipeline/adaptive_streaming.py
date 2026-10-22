@@ -15,10 +15,10 @@ from typing import Any, Callable, Mapping
 
 from redis import Redis
 
-from .adaptive import AdaptiveRankingService
-from .adaptive_redis import create_redis_adaptive_service
-from .contracts import validate_event
-from .topics import EVENTS_TOPIC
+from pipeline.adaptive import AdaptiveRankingService
+from pipeline.adaptive_redis import create_redis_adaptive_service
+from pipeline.contracts import validate_event
+from pipeline.topics import EVENTS_TOPIC
 
 
 EventConsumer = Callable[[dict[str, Any], int], Any]
@@ -80,6 +80,9 @@ def _canonical_adaptive_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     catalog_product_ids = canonical.get("catalog_product_ids")
     if isinstance(catalog_product_ids, list):
         canonical["product_ids"] = [str(product_id) for product_id in catalog_product_ids]
+    if canonical.get('event_type') == 'cart_synchronized':
+        canonical['cart'] = [{**item, 'product_id': str(item.get('catalog_product_id', item['product_id']))}
+                             for item in canonical['cart']]
     return canonical
 
 
@@ -142,6 +145,7 @@ def build_query(
     watermark: str,
     foreach_batch: AdaptiveForeachBatch,
     starting_offsets: str = "earliest",
+    available_now: bool = False,
 ) -> Any:
     """Build (without awaiting) the Kafka-to-feature Structured Streaming query."""
 
@@ -172,7 +176,7 @@ def build_query(
             ).alias("event")
         )
         .withColumn(
-            "event_time_timestamp", functions.to_timestamp("event.event_time")
+            "event_time_timestamp", functions.try_to_timestamp("event.event_time")
         )
         .withColumn(
             "stream_event_time",
@@ -195,14 +199,16 @@ def build_query(
             "stream_dedup_id",
         )
         .withWatermark("stream_event_time", watermark)
-        .dropDuplicates(["stream_dedup_id"])
+        .dropDuplicatesWithinWatermark(["stream_dedup_id"])
     )
-    return (
+    writer = (
         routed.writeStream.outputMode("append")
         .option("checkpointLocation", checkpoint_location)
         .foreachBatch(foreach_batch)
-        .start()
     )
+    if available_now:
+        writer = writer.trigger(availableNow=True)
+    return writer.start()
 
 
 def main() -> None:
@@ -218,6 +224,7 @@ def main() -> None:
     )
     parser.add_argument("--watermark", default="10 minutes")
     parser.add_argument("--starting-offsets", choices=("earliest", "latest"), default="earliest")
+    parser.add_argument('--available-now', action='store_true')
     parser.add_argument(
         "--dead-letter-path",
         default=os.getenv("ADAPTIVE_DEAD_LETTER", ".runtime/adaptive-dead-letter.jsonl"),
@@ -229,7 +236,10 @@ def main() -> None:
     except ImportError as exc:  # pragma: no cover - depends on optional runtime
         raise SystemExit("PySpark is required: install the project Spark dependency") from exc
 
-    spark = SparkSession.builder.appName("mba-live-adaptive-features").getOrCreate()
+    spark = (SparkSession.builder.appName("mba-live-adaptive-features")
+             .config('spark.sql.shuffle.partitions', os.getenv('SPARK_SHUFFLE_PARTITIONS', '2'))
+             .config('spark.ui.enabled', 'false').getOrCreate())
+    spark.sparkContext.setLogLevel('WARN')
     redis_url = os.getenv("ADAPTIVE_REDIS_URL", os.getenv("REDIS_URL", "redis://localhost:6379/0"))
     redis_client = Redis.from_url(redis_url, decode_responses=True)
     redis_client.ping()
@@ -241,11 +251,16 @@ def main() -> None:
         checkpoint_location=args.checkpoint_location,
         watermark=args.watermark,
         starting_offsets=args.starting_offsets,
+        available_now=args.available_now,
         foreach_batch=AdaptiveForeachBatch(
             consume_with(service), JsonlDeadLetterSink(args.dead_letter_path)
         ),
     )
-    query.awaitTermination()
+    try:
+        query.awaitTermination()
+        print(json.dumps({'status': 'succeeded', 'progress': query.lastProgress}, default=str), flush=True)
+    finally:
+        spark.stop()
 
 
 def _json_value(value: Any) -> Any:

@@ -7,6 +7,7 @@ cd "$repo_dir"
 uv sync
 uv run pytest -q
 uv run python -m pipeline.adaptive_replay
+node tests/frontend/product_page_recommendation.mjs
 
 for script in app/static/js/*.js; do
   node --check "$script"
@@ -22,5 +23,7 @@ if [[ "${RUN_SPARK_ACCEPTANCE:-0}" == "1" ]]; then
     --als-rank 2 --als-max-iter 2 --als-top-k 2 \
     --run-id "$run_id"
 fi
+
+uv run python -c 'import pandas as pd; from pipeline.artifacts import validate_rules; validate_rules(pd.read_csv("app/rules.csv"))'
 
 echo "Final deliverable verification passed."

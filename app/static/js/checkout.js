@@ -32,7 +32,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const values = Object.fromEntries(new FormData(form));
         const payload = {...values, order_id: orderId, user_id: Market.identity.userId, session_id: Market.identity.sessionId, cart: cart.map(item => ({product_id: Number(item.product_id), quantity: item.quantity})), coupons};
         try {
-            const response = await fetch('/api/checkout', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(payload)}); const data = await response.json();
+            const response = await fetch('/api/checkout', {method: 'POST', headers: {'Content-Type': 'application/json', 'X-CSRF-Token': Market.csrfToken}, body: JSON.stringify(payload)}); const data = await response.json();
             if (!response.ok) throw new Error(data.error || 'The order could not be saved.');
             Market.publish('checkout_completed', {order_id: orderId, product_ids: cart.map(item => item.product_name), catalog_product_ids: cart.map(item => item.product_id), basket_quantity: cart.reduce((sum, item) => sum + item.quantity, 0), total_inr: data.order.total_inr}, true).catch(() => {});
             Market.clearOrder(); sessionStorage.removeItem(pendingKey); location.assign(`/order/${encodeURIComponent(orderId)}?user_id=${encodeURIComponent(Market.identity.userId)}`);

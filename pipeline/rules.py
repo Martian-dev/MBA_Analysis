@@ -10,6 +10,8 @@ from pathlib import Path
 from typing import Any
 
 import redis
+import pandas as pd
+from .artifacts import validate_rules
 
 RULE_PREFIX = "mba:rules:v1:"
 CATALOG_KEY = "mba:catalog:v1"
@@ -27,6 +29,7 @@ def load_rules(
     """Load the strongest rule per directed pair into Redis."""
 
     strongest: dict[tuple[str, str], dict[str, float]] = {}
+    validate_rules(pd.read_csv(rules_path))
     input_rows = 0
     with Path(rules_path).open(newline="", encoding="utf-8") as handle:
         for row in csv.DictReader(handle):
@@ -50,6 +53,8 @@ def load_rules(
 
     client = redis.Redis.from_url(redis_url, decode_responses=True)
     pipe = client.pipeline()
+    for antecedent in client.smembers(CATALOG_KEY):
+        pipe.delete(rule_key(antecedent))
     for antecedent, consequents in grouped.items():
         pipe.delete(rule_key(antecedent))
         pipe.hset(rule_key(antecedent), mapping=consequents)

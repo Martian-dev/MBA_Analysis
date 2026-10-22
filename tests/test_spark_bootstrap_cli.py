@@ -26,20 +26,26 @@ def _artifact(manifest_path: Path, manifest: dict, name: str) -> Path:
 
 
 @pytest.mark.skipif(
-    (shutil.which("java") is None and not os.environ.get("JAVA_HOME"))
-    or importlib.util.find_spec("pyspark") is None,
-    reason="PySpark and a Java runtime are required for the host-side Spark acceptance test",
+    not os.getenv('SPARK_TEST_IMAGE') and ((shutil.which("java") is None and not os.environ.get("JAVA_HOME"))
+    or importlib.util.find_spec("pyspark") is None),
+    reason="Set SPARK_TEST_IMAGE to run the real Spark acceptance test in Docker",
 )
 def test_batch_cli_publishes_validated_versioned_artifacts(tmp_path: Path):
     source = tmp_path / "source"
     output = tmp_path / "artifacts"
     shutil.copytree(Path(__file__).parent / "fixtures" / "instacart-mini", source)
 
+    prefix = [sys.executable, '-m', 'pipeline.spark_bootstrap']
+    if os.getenv('SPARK_TEST_IMAGE'):
+        prefix = ['docker', 'run', '--rm', '--user', f'{os.getuid()}:{os.getgid()}',
+                  '--env', 'HOME=/tmp', '--env', 'SPARK_USER=mba-runner',
+                  '--volume', '/etc/passwd:/etc/passwd:ro', '--volume', '/etc/group:/etc/group:ro',
+                  '--volume', f'{Path(__file__).parents[1]}:/workspace',
+                  '--volume', f'{tmp_path}:{tmp_path}', '--workdir', '/workspace',
+                  os.environ['SPARK_TEST_IMAGE'], '/opt/spark/bin/spark-submit',
+                  '--master', 'local[2]', '--conf', 'spark.jars.ivy=/tmp/.ivy2', 'pipeline/spark_bootstrap.py']
     completed = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "pipeline.spark_bootstrap",
+        prefix + [
             "--input-dir",
             str(source),
             "--output-dir",
@@ -62,6 +68,7 @@ def test_batch_cli_publishes_validated_versioned_artifacts(tmp_path: Path):
             "2",
             "--als-top-k",
             "2",
+            '--spark-master', 'local[2]',
         ],
         cwd=Path(__file__).parents[1],
         text=True,

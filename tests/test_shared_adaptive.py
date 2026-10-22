@@ -48,6 +48,22 @@ class MemoryPipeline:
         self.operations.append(("expire", key, seconds))
         return self
 
+    def zadd(self, key, mapping, nx=False):
+        self.operations.append(('zadd', key, mapping, nx))
+        return self
+
+    def zrem(self, key, member):
+        self.operations.append(('zrem', key, member))
+        return self
+
+    def hset(self, key, field, value):
+        self.operations.append(('hset', key, field, value))
+        return self
+
+    def delete(self, *keys):
+        self.operations.append(('delete_many', keys))
+        return self
+
     def execute(self):
         with self.client._mutex:
             if self.client.fail_next_transaction:
@@ -55,12 +71,16 @@ class MemoryPipeline:
                 raise RedisConnectionError("transaction interrupted before commit")
             results = []
             for operation in self.operations:
+                if operation[0] == 'delete_many':
+                    self.client.delete(*operation[1]); continue
                 method = getattr(self.client, operation[0])
                 if operation[0] == "set":
                     _, key, value, nx, ex = operation
                     results.append(method(key, value, nx=nx, ex=ex))
                 elif operation[0] in {"sadd", "srem"}:
                     results.append(method(operation[1], *operation[2]))
+                elif operation[0] == 'zadd':
+                    results.append(method(operation[1], operation[2], nx=operation[3]))
                 else:
                     results.append(method(*operation[1:]))
             return results
@@ -73,6 +93,7 @@ class MemoryRedis:
         self.values: dict[str, str] = {}
         self.hashes: dict[str, dict[str, str]] = {}
         self.sets: dict[str, set[str]] = {}
+        self.sorted_sets = {}
         self.expirations: dict[str, int] = {}
         self.fail_next_transaction = False
         self._mutex = threading.RLock()
@@ -133,6 +154,22 @@ class MemoryRedis:
     def smembers(self, key):
         with self._mutex:
             return set(self.sets.get(key, set()))
+
+    def zadd(self, key, mapping, nx=False):
+        with self._mutex:
+            target = self.sorted_sets.setdefault(key, {})
+            for member, score in mapping.items():
+                if not nx or member not in target:
+                    target[member] = score
+
+    def zrangebyscore(self, key, minimum, maximum, start=0, num=500):
+        with self._mutex:
+            return [member for member, score in sorted(self.sorted_sets.get(key, {}).items(), key=lambda item: item[1])
+                    if float(minimum) <= score <= float(maximum)][start:start + num]
+
+    def zrem(self, key, member):
+        with self._mutex:
+            self.sorted_sets.get(key, {}).pop(member, None)
 
     def sadd(self, key, *values):
         with self._mutex:

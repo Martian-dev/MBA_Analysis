@@ -6,7 +6,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     const relatedGrid = document.querySelector('[data-related-grid]');
     const basketRecommendationCard = document.querySelector('[data-featured-pairing]');
     const basketRecommendationSection = document.querySelector('[data-featured-section]');
-    const viewStartedAt = performance.now();
+    let viewStartedAt = null;
+    let viewTimer = null;
+    let viewGeneration = 0;
+    const dwellThreshold = Number(document.querySelector('[data-dwell-threshold]')?.dataset?.dwellThreshold || 45);
     let product;
     let viewEnded = false;
     let recommendationRequestId = 0;
@@ -53,10 +56,28 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
     }
 
-    function endView() {
-        if (!product || viewEnded) return; viewEnded = true;
-        const payload = {event_id: `event-${crypto.randomUUID?.() || Date.now()}`, event_type: 'product_view_ended', event_time: new Date().toISOString(), user_id: Market.identity.userId, session_id: Market.identity.sessionId, product_id: product.product_name, catalog_product_id: product.product_id, product_name: product.product_name, dwell_seconds: Math.max(0, Number(((performance.now() - viewStartedAt) / 1000).toFixed(2)))};
-        navigator.sendBeacon?.('/api/events', new Blob([JSON.stringify(payload)], {type: 'application/json'})) || Market.publish('product_view_ended', payload, true).catch(() => {});
+    function endView(unloading = false) {
+        if (!product || viewEnded || viewStartedAt === null) return; viewEnded = true;
+        clearTimeout(viewTimer);
+        const payload = {event_id: `event-${globalThis.crypto?.randomUUID?.() || Date.now()}`, event_type: 'product_view_ended', event_time: new Date().toISOString(), user_id: Market.identity.userId, session_id: Market.identity.sessionId, csrf_token: Market.csrfToken, product_id: product.product_name, catalog_product_id: product.product_id, product_name: product.product_name, dwell_seconds: Math.max(0, Number(((performance.now() - viewStartedAt) / 1000).toFixed(2)))};
+        if (unloading && navigator.sendBeacon?.('/api/events', new Blob([JSON.stringify(payload)], {type: 'application/json'}))) return;
+        Market.publish('product_view_ended', payload, true).catch(() => {});
+    }
+
+    async function startVisibleView() {
+        if (!product || document.visibilityState === 'hidden') return;
+        const generation = ++viewGeneration;
+        clearTimeout(viewTimer);
+        try {
+            await Market.ready;
+            await Market.publish('product_view_started', {product_id: product.product_name,
+                catalog_product_id: product.product_id, product_name: product.product_name});
+            if (generation !== viewGeneration || document.visibilityState === 'hidden') return;
+            viewStartedAt = performance.now(); viewEnded = false;
+            viewTimer = setTimeout(() => {
+                if (document.visibilityState !== 'hidden') endView();
+            }, dwellThreshold * 1000 + 250);
+        } catch (_) { /* A view without a delivered start cannot qualify. */ }
     }
 
     try {
@@ -67,10 +88,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         unsubscribeFromBasket = Market.subscribe(() => { renderStage(); renderBasketRecommendation(); });
         renderStage(); await renderBasketRecommendation();
         relatedGrid.innerHTML = data.related_products.map(item => Market.productCard(item, {source: 'product_related'})).join('');
-        Market.publish('product_view_started', {product_id: product.product_name, catalog_product_id: product.product_id, product_name: product.product_name, referrer: document.referrer || null}).catch(() => {});
+        await startVisibleView();
         data.related_products.forEach(item => Market.publish('recommendation_impression', {product_id: item.product_name, catalog_product_id: item.product_id, product_name: item.product_name, impression_id: item.impression_id, policy_version: item.policy_version, snapshot_version: item.snapshot_version, placement: 'product_related', supporting_product_id: product.product_id}).catch(() => {}));
     } catch (_) {
         stage.innerHTML = '<div class="load-error"><strong>This product could not be loaded.</strong><p>Return to the market and choose another item.</p><a class="button button--primary" href="/">Back to market</a></div>';
     }
-    addEventListener('pagehide', () => { unsubscribeFromBasket?.(); endView(); }, {once: true});
+    addEventListener('pagehide', () => { viewGeneration += 1; unsubscribeFromBasket?.(); endView(true); }, {once: true});
+    document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState === 'hidden') { viewGeneration += 1; endView(); }
+        else startVisibleView();
+    });
 });

@@ -122,6 +122,7 @@ class BootstrapConfig:
     als_reg_param: float
     als_top_k: int
     als_seed: int
+    sample_users: int = 0
 
 
 def _utc_now() -> str:
@@ -163,6 +164,16 @@ def _source_metadata(input_dir: Path) -> dict[str, dict[str, Any]]:
 def _bounded_tables(tables: dict[str, DataFrame], config: BootstrapConfig) -> dict[str, DataFrame]:
     if config.mode == "full":
         return tables
+
+    if config.sample_users:
+        # Preserve longitudinal history instead of selecting unrelated order IDs.
+        selected_users = (tables['orders'].select('user_id').distinct()
+                          .orderBy(F.xxhash64('user_id')).limit(config.sample_users))
+        selected_orders = tables['orders'].join(F.broadcast(selected_users), 'user_id', 'inner')
+        selected_order_ids = selected_orders.select('order_id')
+        return {**tables, 'orders': selected_orders,
+                'order_products_prior': tables['order_products_prior'].join(selected_order_ids, 'order_id', 'inner'),
+                'order_products_train': tables['order_products_train'].join(selected_order_ids, 'order_id', 'inner')}
 
     selected_orders = (
         tables["orders"]
@@ -619,6 +630,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--run-id", default=None)
     parser.add_argument("--mode", choices=("sample", "full"), default="sample")
     parser.add_argument("--sample-orders", type=int, default=10_000)
+    parser.add_argument('--sample-users', type=int, default=0, help='Sample complete shopper histories; overrides sample-orders')
     parser.add_argument("--min-support", type=float, default=0.01)
     parser.add_argument("--min-confidence", type=float, default=0.1)
     parser.add_argument("--num-partitions", type=int, default=2)
@@ -644,6 +656,8 @@ def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.sample_orders <= 0:
         raise SystemExit("--sample-orders must be positive")
+    if args.sample_users < 0:
+        raise SystemExit('--sample-users cannot be negative')
     if not 0 < args.min_support <= 1 or not 0 <= args.min_confidence <= 1:
         raise SystemExit("support must be in (0, 1] and confidence in [0, 1]")
     run_id = _valid_run_id(
@@ -666,6 +680,7 @@ def main(argv: list[str] | None = None) -> int:
         als_reg_param=args.als_reg_param,
         als_top_k=args.als_top_k,
         als_seed=args.als_seed,
+        sample_users=args.sample_users,
     )
     try:
         manifest = run(config)

@@ -1,5 +1,5 @@
 FROM apache/spark:4.0.1-python3
 
 USER root
-RUN python3 -m pip install --no-cache-dir "numpy>=1.26,<3"
+RUN python3 -m pip install --no-cache-dir "numpy>=1.26,<3" "redis>=5.2.1,<6" "kafka-python>=2.2.15,<3"
 USER 185

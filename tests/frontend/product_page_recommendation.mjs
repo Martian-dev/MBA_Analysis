@@ -45,6 +45,10 @@ async function renderProductPage({cart: initialCart, recommendations = [], recom
     let basketListener = () => {};
     let recommendationCall = 0;
     const requestedCarts = [];
+    const published = [];
+    let now = 0;
+    let timer;
+    const documentHandlers = {};
     const elements = {
         '[data-product-stage]': element(),
         '[data-related-grid]': element(),
@@ -77,14 +81,15 @@ async function renderProductPage({cart: initialCart, recommendations = [], recom
         icon: () => '',
         addProduct() {},
         productCard: () => '',
-        publish: async () => {},
+        publish: async (kind, payload) => { published.push({kind, payload}); },
         publishRecommendationImpression: async () => {},
     };
     const document = {
         body: {dataset: {productId: '16'}},
         title: '',
         referrer: '',
-        addEventListener(type, callback) { if (type === 'DOMContentLoaded') onReady = callback; },
+        visibilityState: 'visible',
+        addEventListener(type, callback) { if (type === 'DOMContentLoaded') onReady = callback; else documentHandlers[type] = callback; },
         querySelector(selector) { return elements[selector] || element(); },
     };
     const context = vm.createContext({
@@ -99,8 +104,10 @@ async function renderProductPage({cart: initialCart, recommendations = [], recom
         },
         addEventListener() {},
         navigator: {},
-        performance,
+        performance: {now: () => now},
         URLSearchParams,
+        setTimeout(callback, delay) { timer = {callback, due: now + delay}; return 1; },
+        clearTimeout() { timer = null; },
     });
 
     vm.runInContext(productPageSource, context, {filename: 'product.js'});
@@ -109,6 +116,13 @@ async function renderProductPage({cart: initialCart, recommendations = [], recom
     return {
         elements,
         requestedCarts,
+        published,
+        async advanceTime(milliseconds) {
+            now += milliseconds;
+            if (timer && timer.due <= now) { const callback = timer.callback; timer = null; callback(); }
+            await nextTask();
+        },
+        async setVisibility(value) { document.visibilityState = value; documentHandlers.visibilitychange(); await nextTask(); },
         async replaceCart(nextCart) {
             cart = nextCart;
             basketListener();
@@ -118,6 +132,11 @@ async function renderProductPage({cart: initialCart, recommendations = [], recom
 }
 
 const adaptive = await renderProductPage({cart: [currentProduct], recommendations: [recommendation]});
+await adaptive.advanceTime(44_000);
+assert.equal(adaptive.published.filter(event => event.kind === 'product_view_ended').length, 0);
+await adaptive.advanceTime(1_250);
+assert.equal(adaptive.published.filter(event => event.kind === 'product_view_ended').length, 1);
+assert.equal(adaptive.published.find(event => event.kind === 'product_view_ended').payload.dwell_seconds, 45.25);
 const card = adaptive.elements['[data-featured-pairing]'];
 assert.equal(adaptive.elements['[data-featured-section]'].hidden, false);
 assert.match(card.innerHTML, /Magic Shell Caramel Flavored Topping/);

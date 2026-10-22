@@ -20,6 +20,9 @@ services:
 
   redis:
     image: redis:7.4-alpine
+    command: ["redis-server", "--appendonly", "yes", "--appendfsync", "always"]
+    volumes:
+      - redis_data:/data
     ports:
       - "6379:6379"
     healthcheck:
@@ -27,3 +30,6 @@ services:
       interval: 2s
       timeout: 2s
       retries: 15
+
+volumes:
+  redis_data:

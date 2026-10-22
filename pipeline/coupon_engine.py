@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime
 from collections import OrderedDict
 from typing import Any, Protocol
 
 from .contracts import validate_event
+from .experiment import arm_for
 
 
 class RuleLookup(Protocol):
@@ -46,7 +48,7 @@ class InMemoryCouponClaimStore:
 
 @dataclass
 class UserState:
-    cart: set[str] = field(default_factory=set)
+    cart: dict[str, int] = field(default_factory=dict)
     active_views: dict[str, str] = field(default_factory=dict)
 
 
@@ -60,6 +62,7 @@ class CouponEngine:
         min_support: float = 0.012,
         discount_percent: int = 5,
         claims: CouponClaimStore | None = None,
+        holdout_fraction: float = 0.0,
     ):
         self.rules = rules
         self.dwell_threshold_seconds = dwell_threshold_seconds
@@ -68,6 +71,7 @@ class CouponEngine:
         self.min_support = min_support
         self.discount_percent = discount_percent
         self.claims = claims if claims is not None else InMemoryCouponClaimStore()
+        self.holdout_fraction = holdout_fraction
         self._users: OrderedDict[tuple[str, str], UserState] = OrderedDict()
 
     def process(self, event: dict[str, Any]) -> dict[str, Any] | None:
@@ -82,30 +86,41 @@ class CouponEngine:
             str(decision["product_id"]),
         ))
 
-    def evaluate(self, event: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
+    def evaluate(self, event: dict[str, Any], state: UserState | None = None) -> tuple[dict[str, Any] | None, str]:
         """Apply a shopper event and return the observable decision reason."""
         event = validate_event(event)
         event_type = event["event_type"]
         if event_type not in {
             "cart_item_added",
             "cart_item_removed",
+            "cart_synchronized",
             "product_view_started",
             "product_view_ended",
         }:
             return None, "ignored"
 
         session_key = (event["user_id"], event["session_id"])
-        state = self._users.setdefault(session_key, UserState())
-        self._users.move_to_end(session_key)
-        if len(self._users) > 500:
-            self._users.popitem(last=False)
+        if state is None:
+            state = self._users.setdefault(session_key, UserState())
+            self._users.move_to_end(session_key)
+            if len(self._users) > 500:
+                self._users.popitem(last=False)
+        if event_type == 'cart_synchronized':
+            state.cart = {item['product_id']: item['quantity'] for item in event['cart']}
+            return None, 'cart_updated'
         product = event["product_id"]
 
         if event_type == "cart_item_added":
-            state.cart.add(product)
+            state.cart[product] = event.get("cart_quantity", min(99, state.cart.get(product, 0) + event.get("quantity", 1)))
+            if not state.cart[product]:
+                state.cart.pop(product, None)
             return None, "cart_updated"
         if event_type == "cart_item_removed":
-            state.cart.discard(product)
+            remaining = event.get("cart_quantity", max(0, state.cart.get(product, 0) - event.get("quantity", 1)))
+            if remaining:
+                state.cart[product] = remaining
+            else:
+                state.cart.pop(product, None)
             return None, "cart_updated"
         if event_type == "product_view_started":
             state.active_views[product] = event["event_time"]
@@ -113,8 +128,15 @@ class CouponEngine:
         if event_type != "product_view_ended":
             return None, "ignored"
 
-        state.active_views.pop(product, None)
-        dwell = float(event["dwell_seconds"])
+        started = state.active_views.get(product)
+        if started is None:
+            return None, "missing_view_start"
+        elapsed = (datetime.fromisoformat(event["event_time"].replace("Z", "+00:00"))
+                   - datetime.fromisoformat(started.replace("Z", "+00:00"))).total_seconds()
+        if elapsed < 0:
+            return None, "out_of_order_view"
+        # A claim of a long view cannot exceed its matching event-time span.
+        dwell = min(float(event["dwell_seconds"]), elapsed)
         if dwell < self.dwell_threshold_seconds:
             return None, "below_dwell_threshold"
         if product in state.cart:
@@ -152,6 +174,8 @@ class CouponEngine:
                 return None, "no_qualifying_rule"
             return None, "no_qualifying_rule"
 
+        if arm_for(event['user_id'], self.holdout_fraction) == 'control':
+            return None, 'experiment_control'
         coupon_claim = CouponClaim(event["user_id"], event["session_id"], product)
         if not self.claims.claim(coupon_claim):
             return None, "coupon_already_issued"

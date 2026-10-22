@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import math
 from typing import Any
 
 EVENT_TYPES = frozenset(
@@ -11,6 +12,7 @@ EVENT_TYPES = frozenset(
         "product_view_ended",
         "cart_item_added",
         "cart_item_removed",
+        "cart_synchronized",
         "search_performed",
         "recommendation_impression",
         "recommendation_clicked",
@@ -55,22 +57,57 @@ def validate_event(event: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(f"missing event fields: {', '.join(sorted(missing))}")
 
     event_type = event["event_type"]
-    if event_type not in EVENT_TYPES:
+    if not isinstance(event_type, str) or event_type not in EVENT_TYPES:
         raise ValueError(f"unsupported event_type: {event_type}")
 
     for field in ("event_id", "user_id", "session_id"):
-        if not isinstance(event[field], str) or not event[field].strip():
+        if not isinstance(event[field], str) or not event[field].strip() or len(event[field]) > 256:
             raise ValueError(f"{field} must be a non-empty string")
 
     if event_type in PRODUCT_EVENT_TYPES:
         product_id = event.get("product_id")
-        if not isinstance(product_id, str) or not product_id.strip():
+        if not isinstance(product_id, str) or not product_id.strip() or len(product_id) > 512:
             raise ValueError("product_id must be a non-empty string")
 
     if event_type == "search_performed":
         query = event.get("query")
         if not isinstance(query, str) or not query.strip():
             raise ValueError("search_performed requires a non-empty query")
+
+    if event_type == 'cart_synchronized':
+        cart = event.get('cart')
+        if not isinstance(cart, list) or len(cart) > 500:
+            raise ValueError('cart_synchronized requires a bounded cart list')
+        seen = set()
+        for item in cart:
+            if (not isinstance(item, dict) or not isinstance(item.get('product_id'), str)
+                    or not item['product_id'].strip() or item['product_id'] in seen
+                    or isinstance(item.get('quantity'), bool) or not isinstance(item.get('quantity'), int)
+                    or not 1 <= item['quantity'] <= 99):
+                raise ValueError('Invalid or duplicate cart snapshot item')
+            seen.add(item['product_id'])
+
+    if "product_ids" in event:
+        values = event["product_ids"]
+        if not isinstance(values, list) or len(values) > 500 or any(
+            not isinstance(value, str) or not value.strip() for value in values
+        ):
+            raise ValueError("product_ids must be a bounded list of non-empty strings")
+
+    for field in ("catalog_product_id",):
+        if field in event and (
+            isinstance(event[field], bool) or not isinstance(event[field], (int, str))
+            or not str(event[field]).isdigit() or int(event[field]) < 1
+        ):
+            raise ValueError(f"{field} must be a positive catalog identifier")
+    if "catalog_product_ids" in event and (
+        not isinstance(event["catalog_product_ids"], list)
+        or len(event["catalog_product_ids"]) > 500
+        or any(isinstance(value, bool) or not isinstance(value, (int, str))
+               or not str(value).isdigit() or int(value) < 1
+               for value in event["catalog_product_ids"])
+    ):
+        raise ValueError("catalog_product_ids must be a bounded list of positive identifiers")
 
     if event_type in CHECKOUT_EVENT_TYPES:
         order_id = event.get("order_id")
@@ -95,12 +132,18 @@ def validate_event(event: dict[str, Any]) -> dict[str, Any]:
 
     if event_type == "product_view_ended":
         dwell = event.get("dwell_seconds")
-        if isinstance(dwell, bool) or not isinstance(dwell, (int, float)) or dwell < 0:
+        if (isinstance(dwell, bool) or not isinstance(dwell, (int, float))
+                or not math.isfinite(dwell) or not 0 <= dwell <= 86_400):
             raise ValueError("product_view_ended requires a non-negative dwell_seconds")
 
     if event_type in {"cart_item_added", "cart_item_removed"}:
         quantity = event.get("quantity", 1)
-        if isinstance(quantity, bool) or not isinstance(quantity, int) or quantity < 1:
+        if isinstance(quantity, bool) or not isinstance(quantity, int) or not 1 <= quantity <= 99:
             raise ValueError("cart events require a positive integer quantity")
+        remaining = event.get("cart_quantity")
+        if remaining is not None and (
+            isinstance(remaining, bool) or not isinstance(remaining, int) or not 0 <= remaining <= 99
+        ):
+            raise ValueError("cart_quantity must be an integer between 0 and 99")
 
     return event

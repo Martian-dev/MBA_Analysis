@@ -151,6 +151,10 @@ class RedisFeatureStore:
             self._increment(self._positive, product_id, 0.5)
         elif event_type == "cart_item_added" and product_id:
             cart_key = self._cart_key(user_id, session_id)
+            quantity_key = cart_key + ':quantities'
+            quantity = event.get('cart_quantity', min(99, int(self.client.hget(quantity_key, product_id) or 0) + event.get('quantity', 1)))
+            self.writer.hset(quantity_key, product_id, quantity)
+            self.writer.expire(quantity_key, self.session_ttl_seconds)
             for cart_item in self._cart(user_id, session_id):
                 pair = _field(*sorted((cart_item, product_id)))
                 self._increment(self._pairs, pair, 1.0)
@@ -159,12 +163,27 @@ class RedisFeatureStore:
             self._adjust(user_id, session_id, product_id, 2.0)
             self._increment(self._positive, product_id, 1.0)
         elif event_type == "cart_item_removed" and product_id:
-            self.writer.srem(self._cart_key(user_id, session_id), product_id)
+            cart_key = self._cart_key(user_id, session_id)
+            quantity_key = cart_key + ':quantities'
+            remaining = event.get('cart_quantity', max(0, int(self.client.hget(quantity_key, product_id) or 0) - event.get('quantity', 1)))
+            self.writer.hset(quantity_key, product_id, remaining)
+            if not remaining:
+                self.writer.srem(cart_key, product_id)
             self._adjust(user_id, session_id, product_id, -1.5)
+        elif event_type == 'cart_synchronized':
+            cart_key = self._cart_key(user_id, session_id)
+            self.writer.delete(cart_key, cart_key + ':quantities')
+            for item in event['cart']:
+                self.writer.sadd(cart_key, item['product_id'])
+                self.writer.hset(cart_key + ':quantities', item['product_id'], item['quantity'])
+            self.writer.expire(cart_key, self.session_ttl_seconds)
+            self.writer.expire(cart_key + ':quantities', self.session_ttl_seconds)
         elif event_type == "coupon_applied" and product_id:
             self._adjust(user_id, session_id, product_id, 1.5)
             self._increment(self._positive, product_id, 0.75)
         elif event_type == "checkout_completed":
+            cart_key = self._cart_key(user_id, session_id)
+            self.writer.delete(cart_key, cart_key + ':quantities')
             product_ids = [str(item) for item in event.get("product_ids", [])]
             for item in product_ids:
                 self._adjust(user_id, session_id, item, 2.0)
@@ -272,6 +291,7 @@ class RedisLinUCBState:
         self.dimensions = len(FEATURE_NAMES)
         self.state_ttl_seconds = state_ttl_seconds
         self._updates_key = f"{namespace}:bandit:updates"
+        self._staged_states = {}
 
     def _state_key(self, product_id: str) -> str:
         return f"{self.namespace}:bandit:{_digest(product_id)}"
@@ -286,8 +306,13 @@ class RedisLinUCBState:
         }
 
     def _load(self, product_id: str) -> dict[str, Any]:
+        if self.writer is not self.client and product_id in self._staged_states:
+            return self._staged_states[product_id]
         raw = _text(self.client.get(self._state_key(product_id)))
-        return json.loads(raw) if raw else self._new_state()
+        state = json.loads(raw) if raw else self._new_state()
+        if self.writer is not self.client:
+            self._staged_states[product_id] = state
+        return state
 
     def has_observations(self) -> bool:
         return int(_text(self.client.get(self._updates_key)) or 0) > 0
@@ -375,6 +400,7 @@ class RedisAdaptiveRankingService(AdaptiveRankingService):
             impressions=RedisImpressionStore(
                 client, self.namespace, ttl_seconds=impression_ttl_seconds
             ),
+            outcomes=RedisOutcomes(client, self.namespace),
             **options,
         )
 
@@ -443,6 +469,8 @@ class RedisAdaptiveRankingService(AdaptiveRankingService):
                 transaction = self.redis_client.pipeline(transaction=True)
                 original_features = self.features
                 original_bandit = self.bandit_state
+                original_outcomes = self.outcomes
+                self.outcomes = RedisOutcomes(self.redis_client, self.namespace, writer=transaction)
                 self.features = RedisFeatureStore(
                     self.redis_client,
                     self.namespace,
@@ -463,6 +491,7 @@ class RedisAdaptiveRankingService(AdaptiveRankingService):
                 finally:
                     self.features = original_features
                     self.bandit_state = original_bandit
+                    self.outcomes = original_outcomes
                 if result.status == "state_unavailable":
                     self._processed_events.pop(event_id, None)
                     return result
@@ -477,6 +506,51 @@ class RedisAdaptiveRankingService(AdaptiveRankingService):
         except Exception:
             self._processed_events.pop(event_id, None)
             raise
+
+    def settle_expired(self):
+        with self.redis_client.lock(f'{self.namespace}:feedback-commit-lock', timeout=30, blocking_timeout=5):
+            transaction = self.redis_client.pipeline(transaction=True)
+            original_bandit, original_outcomes = self.bandit_state, self.outcomes
+            self.bandit_state = RedisLinUCBState(self.redis_client, self.namespace, writer=transaction,
+                                                state_ttl_seconds=self.state_ttl_seconds)
+            self.outcomes = RedisOutcomes(self.redis_client, self.namespace, writer=transaction)
+            try:
+                result = super().settle_expired()
+                transaction.execute()
+                return result
+            finally:
+                self.bandit_state, self.outcomes = original_bandit, original_outcomes
+
+
+class RedisOutcomes:
+    def __init__(self, client, namespace, writer=None):
+        self.client = client
+        self.writer = writer if writer is not None else client
+        self.namespace = namespace
+        self.pending = f'{namespace}:outcomes:pending'
+
+    def _member(self, impression_id, product_id):
+        return json.dumps([impression_id, product_id], separators=(',', ':'))
+
+    def _key(self, impression_id, product_id):
+        return f'{self.namespace}:outcome:{_digest(impression_id, product_id)}'
+
+    def expose(self, impression_id, product_id, deadline):
+        if self.status(impression_id, product_id) is None:
+            self.writer.zadd(self.pending, {self._member(impression_id, product_id): deadline}, nx=True)
+
+    def respond(self, impression_id, product_id):
+        self.writer.set(self._key(impression_id, product_id), 'responded', ex=86_400)
+
+    def status(self, impression_id, product_id):
+        return _text(self.client.get(self._key(impression_id, product_id)))
+
+    def due(self, now):
+        return [tuple(json.loads(member)) for member in self.client.zrangebyscore(self.pending, '-inf', now, start=0, num=500)]
+
+    def close(self, impression_id, product_id):
+        self.writer.zrem(self.pending, self._member(impression_id, product_id))
+        self.writer.set(self._key(impression_id, product_id), 'closed', ex=86_400)
 
 
 def create_redis_adaptive_service(

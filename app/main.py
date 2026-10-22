@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import math
 import os
 import re
 import secrets
@@ -16,7 +17,7 @@ from pathlib import Path
 from typing import Any
 
 import pandas as pd
-from flask import Flask, Response, abort, jsonify, render_template, request, stream_with_context
+from flask import Flask, Response, abort, jsonify, render_template, request, stream_with_context, session, redirect
 from kafka import KafkaProducer
 from kafka.errors import KafkaError
 from redis import Redis
@@ -28,11 +29,22 @@ from pipeline.adaptive_redis import create_redis_adaptive_service
 from pipeline.observability import ActivityLog, CouponLedger
 from pipeline.serialization import JsonSerializer
 from pipeline.topics import EVENTS_TOPIC
+from app.identity import configure_identity, shopper, authorize, operator, operator_token
+from app.order_store import OrderStore
+from pipeline.artifacts import validate_rules
+from pipeline.candidates import HistoricalCandidates
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 64 * 1024
+configure_identity(app)
+
+
+@app.errorhandler(403)
+def forbidden(error):
+    return jsonify({"error": error.description}), 403
 
 BASE_DIR = Path(__file__).resolve().parent
 PROJECT_DIR = BASE_DIR.parent
@@ -40,6 +52,10 @@ RULES_PATH = Path(os.getenv("RULES_PATH", BASE_DIR / "rules.csv"))
 MAPPING_PATH = BASE_DIR / "group_mapping.json"
 DATA_DIR = Path(os.getenv("INSTACART_DATA_DIR", PROJECT_DIR / "InstacartMBA"))
 DEFAULT_ORDER_STORE = PROJECT_DIR / ".runtime" / "marketplace" / "orders.jsonl"
+historical_candidates = HistoricalCandidates.load(
+    BASE_DIR / 'popularity.json',
+    os.getenv('ALS_CANDIDATES_PATH') or RULES_PATH.parent / 'als_candidates.json',
+)
 app.config.setdefault("ORDER_STORE_PATH", str(DEFAULT_ORDER_STORE))
 
 RULE_ID_COLUMNS = ("antecedent_product_id", "consequent_product_id")
@@ -121,7 +137,7 @@ def load_data() -> None:
     global departments, aisles
 
     try:
-        rules_df = pd.read_csv(RULES_PATH)
+        rules_df = validate_rules(pd.read_csv(RULES_PATH))
         run_ids = (
             rules_df["run_id"].dropna().astype(str).str.strip().loc[lambda values: values != ""].unique()
             if "run_id" in rules_df.columns
@@ -208,7 +224,9 @@ load_data()
 
 @app.context_processor
 def inject_catalog_scope() -> dict[str, str]:
-    return {"catalog_scope_token": catalog_scope_token}
+    return {"catalog_scope_token": catalog_scope_token, "shopper_id": shopper(),
+            "csrf_token": session['csrf_token'],
+            "dwell_threshold_seconds": float(os.getenv('DWELL_THRESHOLD_SECONDS', '45'))}
 
 
 def activity_log() -> ActivityLog:
@@ -237,7 +255,11 @@ def _public_product(product: dict[str, Any]) -> dict[str, Any]:
 
 
 def _product_for(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, bool):
+        return None
     if isinstance(value, int) or (isinstance(value, str) and value.isdigit()):
+        if len(str(value)) > 12:
+            return None
         return products_by_id.get(int(value))
     if isinstance(value, str):
         exact = products_by_exact_name.get(value)
@@ -257,10 +279,14 @@ def _related_products(product: dict[str, Any], limit: int = 6) -> list[dict[str,
     if has_catalog_ids:
         matches = rules_df[
             pd.to_numeric(rules_df["antecedent_product_id"], errors="coerce").eq(product["product_id"])
-        ].sort_values("lift", ascending=False)
+        ].copy()
     else:
-        representative = name if "run_id" in rules_df.columns else item_to_rep_map.get(name, name)
-        matches = rules_df[rules_df["antecedents"] == representative].sort_values("lift", ascending=False)
+        # Serving uses actual catalog products. Experimental semantic clusters
+        # must never silently substitute another product's identity or metrics.
+        representative = name
+        matches = rules_df[rules_df["antecedents"] == representative].copy()
+    matches['_ranking_score'] = matches['confidence'] * matches['lift'].map(math.log1p)
+    matches = matches.sort_values(['_ranking_score', 'consequents'], ascending=[False, True])
     chosen: list[dict[str, Any]] = []
     seen = {product["product_id"]}
     for _, rule in matches.iterrows():
@@ -274,11 +300,21 @@ def _related_products(product: dict[str, Any], limit: int = 6) -> list[dict[str,
             item["recommendation_reason"] = f"Often paired with {name}"
             item["recommendation_source"] = "historical_rule"
             item["lift"] = round(float(rule["lift"]), 3)
+            item['prior_score'] = 1 + float(rule['_ranking_score'])
             chosen.append(item)
             seen.add(candidate["product_id"])
             if len(chosen) >= limit:
                 return chosen
 
+    for product_id, source in historical_candidates.ranked(session.get('historical_user_id')):
+        if product_id in products_by_id and product_id not in seen:
+            item = _public_product(products_by_id[product_id])
+            item['recommendation_reason'] = 'Popular in earlier purchase baskets' if source == 'popularity_fallback' else 'Collaborative purchase model'
+            item['recommendation_source'] = source
+            item['prior_score'] = .5 / (len(chosen) + 1)
+            chosen.append(item); seen.add(product_id)
+            if len(chosen) >= limit:
+                return chosen
     for candidate in catalog_products:
         if candidate["aisle_id"] == product["aisle_id"] and candidate["product_id"] not in seen:
             item = _public_product(candidate)
@@ -305,7 +341,7 @@ def _adaptive_rank_products(
     candidates = [
         {
             "product_id": str(item["product_id"]),
-            "prior_score": float(item.get("lift") or (1 / (index + 1))),
+            "prior_score": float(item.get('prior_score') or (1 / (index + 1))),
             "snapshot_version": rules_snapshot_version,
             "catalog_product_id": item["product_id"],
             **(
@@ -348,6 +384,41 @@ def _query_cart_products() -> list[dict[str, Any]]:
     return [product for value in values if (product := _product_for(value))]
 
 
+def _cart_candidates(cart_products, limit=24):
+    """Score every supporting cart item before selecting the global candidates."""
+    cart_ids = {item['product_id'] for item in cart_products}
+    cart_names = {item['product_name'] for item in cart_products}
+    if _rules_use_catalog_ids(rules_df):
+        matches = rules_df[pd.to_numeric(rules_df.antecedent_product_id).isin(cart_ids)].copy()
+    else:
+        matches = rules_df[rules_df.antecedents.isin(cart_names)].copy()
+    matches['_score'] = matches.confidence * matches.lift.map(math.log1p)
+    matches = matches.sort_values(['_score', 'consequents'], ascending=[False, True])
+    selected = []; seen = set(cart_ids)
+    for _, rule in matches.iterrows():
+        candidate = _product_for(int(rule.consequent_product_id)) if 'consequent_product_id' in rule else _product_for(rule.consequents)
+        supporting = _product_for(int(rule.antecedent_product_id)) if 'antecedent_product_id' in rule else _product_for(rule.antecedents)
+        if candidate and supporting and candidate['product_id'] not in seen:
+            item = _public_product(candidate)
+            item.update(recommendation_source='historical_rule', recommendation_reason=f"Often paired with {supporting['product_name']}",
+                supporting_product_id=supporting['product_id'], supporting_product_name=supporting['product_name'],
+                lift=float(rule.lift), prior_score=1 + float(rule['_score']),
+                recommendation_id=f"cart:{supporting['product_id']}:{candidate['product_id']}")
+            selected.append(item); seen.add(candidate['product_id'])
+            if len(selected) >= limit:
+                return selected
+    for product_id, source in historical_candidates.ranked(session.get('historical_user_id')):
+        if product_id not in seen and product_id in products_by_id:
+            item = _public_product(products_by_id[product_id])
+            item.update(recommendation_source=source, recommendation_reason='Popular in earlier purchase baskets',
+                prior_score=.5 / (len(selected) + 1), supporting_product_id=cart_products[0]['product_id'],
+                supporting_product_name=cart_products[0]['product_name'], recommendation_id=f'fallback:{product_id}')
+            selected.append(item); seen.add(product_id)
+            if len(selected) >= limit:
+                break
+    return selected
+
+
 @app.get("/")
 def home():
     return render_template(
@@ -376,6 +447,12 @@ def order_page(order_id: str):
 
 @app.get("/viewer")
 def viewer():
+    token = request.args.get('token')
+    if token is not None and secrets.compare_digest(token, operator_token()):
+        session['operator'] = True
+        return redirect('/viewer')
+    if not operator():
+        abort(403, description='Operator access required. Use the private viewer link from the launcher.')
     return render_template("viewer.html")
 
 
@@ -385,6 +462,10 @@ def activity_snapshot():
     session_id = request.args.get("session_id")
     if (user_id is None) != (session_id is None):
         return jsonify({"error": "user_id and session_id must be supplied together"}), 400
+    if not operator():
+        if user_id is not None:
+            authorize(user_id)
+        user_id = shopper()
     try:
         return jsonify(activity_log().snapshot(user_id=user_id, session_id=session_id))
     except RedisError:
@@ -397,6 +478,10 @@ def available_coupons():
     session_id = request.args.get("session_id")
     if (user_id is None) != (session_id is None):
         return jsonify({"error": "user_id and session_id must be supplied together"}), 400
+    if not operator():
+        if user_id is not None:
+            authorize(user_id)
+        user_id = shopper()
     try:
         available = coupon_ledger().available(user_id=user_id, session_id=session_id)
     except RedisError:
@@ -416,6 +501,29 @@ def publish_storefront_event():
         event = validate_event(payload)
     except ValueError as exc:
         return jsonify({"error": str(exc)}), 400
+    authorize(event['user_id'], event)
+    event.pop('csrf_token', None)
+    # Browser event time is stamped by the server; a client cannot backdate a view.
+    event['event_time'] = datetime.now(timezone.utc).isoformat()
+    if event.get('catalog_product_id') is not None:
+        product = products_by_id.get(int(event['catalog_product_id']))
+        if product is None or product['product_name'] != event.get('product_id'):
+            return jsonify({'error': 'Product identifier and name do not match the catalog'}), 400
+    if event['event_type'] == 'cart_synchronized':
+        for item in event['cart']:
+            product = _product_for(item['product_id'])
+            if product is None:
+                return jsonify({'error': 'Unknown cart product'}), 400
+            item['catalog_product_id'] = product['product_id']
+    if event['event_type'] == 'checkout_completed':
+        order = next((record for record in _order_records()
+                      if record['order_id'] == event['order_id'] and record['user_id'] == shopper()
+                      and record['session_id'] == event['session_id']), None)
+        if order is None:
+            return jsonify({'error': 'Checkout feedback requires a confirmed owned order'}), 400
+        event['event_id'] = 'checkout-completed:' + order['order_id']
+        event['product_ids'] = [item['product_name'] for item in order['items']]
+        event['catalog_product_ids'] = [item['product_id'] for item in order['items']]
     with _event_publish_lock:
         if time.monotonic() < _event_retry_after:
             return jsonify({"error": "Kafka is unavailable. Start the live stack."}), 503
@@ -434,6 +542,8 @@ def publish_storefront_event():
     catalog_product_ids = event.get("catalog_product_ids")
     if isinstance(catalog_product_ids, list):
         adaptive_event["product_ids"] = [str(product_id) for product_id in catalog_product_ids]
+    if event['event_type'] == 'cart_synchronized':
+        adaptive_event['cart'] = [{**item, 'product_id': str(item['catalog_product_id'])} for item in event['cart']]
     with _adaptive_lock:
         feedback = adaptive_service.observe_event(adaptive_event)
     return jsonify({
@@ -451,6 +561,10 @@ def activity_stream():
     session_id = request.args.get("session_id")
     if (user_id is None) != (session_id is None):
         return jsonify({"error": "user_id and session_id must be supplied together"}), 400
+    if not operator():
+        if user_id is not None:
+            authorize(user_id)
+        user_id = shopper()
     try:
         log = activity_log()
         log.client.ping()
@@ -462,7 +576,7 @@ def activity_stream():
             for item in log.follow(cursor):
                 if user_id is not None and (
                     item["payload"].get("user_id") != user_id
-                    or item["payload"].get("session_id") != session_id
+                    or (session_id is not None and item["payload"].get("session_id") != session_id)
                 ):
                     continue
                 yield f"id: {item['id']}\ndata: {json.dumps(item)}\n\n"
@@ -520,6 +634,8 @@ def get_products():
 
 @app.get("/api/products/<int:product_id>")
 def get_product(product_id: int):
+    if request.args.get('user_id'):
+        authorize(request.args['user_id'])
     product = products_by_id.get(product_id)
     if product is None:
         return jsonify({"error": "Product not found"}), 404
@@ -538,6 +654,8 @@ def get_product(product_id: int):
 
 @app.get("/api/recommend")
 def get_recommendations():
+    if request.args.get('user_id'):
+        authorize(request.args['user_id'])
     product = _product_for(request.args.get("product_id") or request.args.get("item"))
     if product is None:
         return jsonify({"error": "A valid product_id or item is required"}), 400
@@ -558,30 +676,18 @@ def get_recommendations():
 @app.post("/api/cart-recommend")
 def get_cart_recommendations():
     data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"error": "Expected a JSON object"}), 400
     cart_values = data.get("cart", [])
     if not isinstance(cart_values, list):
         return jsonify({"error": "cart must be a list"}), 400
+    authorize(data.get('user_id') or shopper(), data)
     cart_products = [product for value in cart_values if (product := _product_for(value))]
     if not cart_products:
         return jsonify({"recommendations": []})
-    cart_ids = {product["product_id"] for product in cart_products}
-    result: list[dict[str, Any]] = []
-    seen = set(cart_ids)
-    for supporting in cart_products:
-        for recommendation in _related_products(supporting, 6):
-            if recommendation["product_id"] in seen:
-                continue
-            recommendation["supporting_product_id"] = supporting["product_id"]
-            recommendation["supporting_product_name"] = supporting["product_name"]
-            recommendation["recommendation_id"] = f"cart:{supporting['product_id']}:{recommendation['product_id']}"
-            result.append(recommendation)
-            seen.add(recommendation["product_id"])
-            if len(result) >= 12:
-                break
-        if len(result) >= 12:
-            break
+    result = _cart_candidates(cart_products)
 
-    user_id = str(data.get("user_id") or "marketplace-anonymous")
+    user_id = shopper()
     session_id = str(data.get("session_id") or "marketplace-session")
     ranked, recommendation = _adaptive_rank_products(
         result,
@@ -596,28 +702,28 @@ def get_cart_recommendations():
 
 
 def _order_records() -> list[dict[str, Any]]:
-    path = Path(app.config["ORDER_STORE_PATH"])
-    if not path.exists():
-        return []
-    with path.open(encoding="utf-8") as handle:
-        return [json.loads(line) for line in handle if line.strip()]
+    return OrderStore(app.config['ORDER_STORE_PATH']).records()
 
 
 @app.post("/api/checkout")
 def create_order():
     data = request.get_json(silent=True) or {}
+    if not isinstance(data, dict):
+        return jsonify({"error": "Expected a JSON object"}), 400
     required = ("order_id", "user_id", "session_id", "name", "email", "address", "city", "postal_code")
     missing = [field for field in required if not isinstance(data.get(field), str) or not data[field].strip()]
     if missing:
         return jsonify({"error": "Complete all required checkout fields", "fields": missing}), 400
     if not re.fullmatch(r"BS-[A-Za-z0-9-]{8,64}", data["order_id"]):
         return jsonify({"error": "Invalid order_id"}), 400
+    authorize(data['user_id'], data)
     if "@" not in data["email"]:
         return jsonify({"error": "Enter a valid email address", "fields": ["email"]}), 400
     raw_cart = data.get("cart")
     if not isinstance(raw_cart, list) or not raw_cart:
         return jsonify({"error": "The basket is empty"}), 400
     line_items: list[dict[str, Any]] = []
+    seen_products = set()
     subtotal = 0.0
     for item in raw_cart:
         if not isinstance(item, dict):
@@ -626,20 +732,29 @@ def create_order():
         quantity = item.get("quantity")
         if product is None or isinstance(quantity, bool) or not isinstance(quantity, int) or not 1 <= quantity <= 99:
             return jsonify({"error": "Invalid basket item"}), 400
+        if product['product_id'] in seen_products:
+            return jsonify({'error': 'Duplicate basket item'}), 400
+        seen_products.add(product['product_id'])
         line_total = round(product["price_inr"] * quantity, 2)
         subtotal += line_total
         line_items.append({**_public_product(product), "quantity": quantity, "line_total_inr": line_total})
 
+    if not isinstance(data.get("coupons", []), list):
+        return jsonify({"error": "coupons must be a list"}), 400
     requested_coupon_ids = [
         str(coupon["coupon_id"])
         for coupon in data.get("coupons", [])
         if isinstance(coupon, dict) and isinstance(coupon.get("coupon_id"), str)
     ]
-    path = Path(app.config["ORDER_STORE_PATH"])
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with _order_lock:
-        if any(record["order_id"] == data["order_id"] for record in _order_records()):
-            return jsonify({"error": "This order has already been submitted"}), 409
+    fingerprint = hashlib.sha256(json.dumps({key: data.get(key) for key in (
+        'user_id', 'session_id', 'name', 'email', 'address', 'city', 'postal_code', 'cart', 'coupons')},
+        sort_keys=True).encode()).hexdigest()
+    with OrderStore(app.config['ORDER_STORE_PATH']).transaction() as connection:
+        existing = connection.execute('SELECT payload, fingerprint FROM orders WHERE order_id=?', (data['order_id'],)).fetchone()
+        if existing:
+            if existing[1] == fingerprint:
+                return jsonify({'status': 'confirmed', 'order': json.loads(existing[0])}), 200
+            return jsonify({"error": "This order ID belongs to another submission"}), 409
         try:
             redeemed = coupon_ledger().redeem(
                 requested_coupon_ids,
@@ -686,8 +801,8 @@ def create_order():
             "total_inr": round(max(0, subtotal - savings), 2), "currency": "INR",
             "price_disclosure": "All prices are illustrative; no payment was processed.",
         }
-        with path.open("a", encoding="utf-8") as handle:
-            handle.write(json.dumps(order, ensure_ascii=False) + "\n")
+        connection.execute('INSERT INTO orders VALUES (?, ?, ?)',
+                           (order['order_id'], json.dumps(order, ensure_ascii=False), fingerprint))
     return jsonify({"status": "confirmed", "order": order}), 201
 
 
@@ -696,6 +811,8 @@ def get_order(order_id: str):
     user_id = request.args.get("user_id", "")
     if not user_id:
         return jsonify({"error": "user_id is required"}), 400
+    if user_id != shopper():
+        return jsonify({"error": "Order not found"}), 404
     for order in reversed(_order_records()):
         if order["order_id"] == order_id and secrets.compare_digest(order["user_id"], user_id):
             return jsonify({"order": order})

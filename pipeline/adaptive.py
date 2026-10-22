@@ -8,6 +8,7 @@ eligibility remains a separate, non-learning policy boundary.
 from __future__ import annotations
 
 import math
+import time
 from collections import OrderedDict, defaultdict
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Protocol, Sequence
@@ -214,6 +215,34 @@ class InMemoryImpressionStore:
         return self.get(impression_id) if impression_id else None
 
 
+class InMemoryOutcomes:
+    """One matured outcome per actually displayed recommendation."""
+    def __init__(self):
+        self.pending = {}
+        self.statuses = OrderedDict()
+
+    def expose(self, impression_id, product_id, deadline):
+        key = (impression_id, product_id)
+        if key not in self.statuses:
+            self.pending.setdefault(key, deadline)
+
+    def respond(self, impression_id, product_id):
+        self.statuses[(impression_id, product_id)] = 'responded'
+
+    def status(self, impression_id, product_id):
+        return self.statuses.get((impression_id, product_id))
+
+    def due(self, now):
+        return [key for key, deadline in self.pending.items() if deadline <= now]
+
+    def close(self, impression_id, product_id):
+        key = (impression_id, product_id)
+        self.pending.pop(key, None)
+        self.statuses[key] = 'closed'
+        while len(self.statuses) > 50_000:
+            self.statuses.popitem(last=False)
+
+
 class BanditState(Protocol):
     def score(
         self, product_id: str, features: Sequence[float], alpha: float
@@ -303,7 +332,7 @@ class LiveFeatureStore:
         self._product_positive: defaultdict[str, float] = defaultdict(float)
         self._product_impressions: defaultdict[str, int] = defaultdict(int)
         self._pair_affinity: defaultdict[tuple[str, str], float] = defaultdict(float)
-        self._carts: defaultdict[tuple[str, str], set[str]] = defaultdict(set)
+        self._carts: defaultdict[tuple[str, str], dict[str, int]] = defaultdict(dict)
 
     def features(
         self, request: RankingRequest, candidate: HistoricalCandidate
@@ -311,9 +340,9 @@ class LiveFeatureStore:
         product_id = candidate.product_id
         session_key = (request.user_id, request.session_id, product_id)
         shopper_key = (request.user_id, product_id)
-        cart = set(request.cart_product_ids) | self._carts.get(
+        cart = set(request.cart_product_ids) | set(self._carts.get(
             (request.user_id, request.session_id), set()
-        )
+        ))
         pair_affinity = max(
             (
                 self._pair_affinity.get(_pair_key(item, product_id), 0.0)
@@ -356,19 +385,27 @@ class LiveFeatureStore:
             self._trim(self._carts, self.max_sessions)
             for cart_item in cart:
                 self._increment(self._pair_affinity, _pair_key(cart_item, product_id), 1.0)
-            cart.add(product_id)
+            cart[product_id] = event.get('cart_quantity', min(99, cart.get(product_id, 0) + event.get('quantity', 1)))
             self._adjust(user_id, session_id, product_id, 2.0)
             self._increment(self._product_positive, product_id, 1.0)
         elif event_type == "cart_item_removed" and product_id:
             product_id = str(product_id)
             cart = self._carts.get((user_id, session_id))
             if cart is not None:
-                cart.discard(product_id)
+                remaining = event.get('cart_quantity', max(0, cart.get(product_id, 0) - event.get('quantity', 1)))
+                if remaining:
+                    cart[product_id] = remaining
+                else:
+                    cart.pop(product_id, None)
             self._adjust(user_id, session_id, product_id, -1.5)
+        elif event_type == 'cart_synchronized':
+            self._carts[(user_id, session_id)] = {item['product_id']: item['quantity'] for item in event['cart']}
+            self._trim(self._carts, self.max_sessions)
         elif event_type == "coupon_applied" and product_id:
             self._adjust(user_id, session_id, str(product_id), 1.5)
             self._increment(self._product_positive, str(product_id), 0.75)
         elif event_type == "checkout_completed":
+            self._carts.pop((user_id, session_id), None)
             product_ids = [str(item) for item in event.get("product_ids", [])]
             for item in product_ids:
                 self._adjust(user_id, session_id, item, 2.0)
@@ -466,6 +503,9 @@ class AdaptiveRankingService:
         bandit_state: BanditState | None = None,
         impressions: ImpressionStore | None = None,
         guardrails: CouponGuardrails | None = None,
+        outcomes=None,
+        feedback_window_seconds: float = 300,
+        clock=time.time,
     ) -> None:
         self.alpha = alpha
         self.historical_weight = historical_weight
@@ -473,10 +513,14 @@ class AdaptiveRankingService:
         self.bandit_state = bandit_state or InMemoryLinUCBState()
         self.impressions = impressions or InMemoryImpressionStore()
         self.guardrails = guardrails or CouponGuardrails()
+        self.outcomes = outcomes if outcomes is not None else InMemoryOutcomes()
+        self.feedback_window_seconds = feedback_window_seconds
+        self.clock = clock
         self._decision_sequence = 0
         self._processed_events: OrderedDict[str, None] = OrderedDict()
 
     def rank(self, request: RankingRequest, snapshot: CandidateSnapshot) -> RankingDecision:
+        self.settle_expired()
         live_cart = self.features.cart_product_ids(request.user_id, request.session_id)
         effective_cart = tuple(dict.fromkeys((*request.cart_product_ids, *sorted(live_cart))))
         effective_request = RankingRequest(
@@ -617,6 +661,11 @@ class AdaptiveRankingService:
         event_type = event["event_type"]
         reward = _EVENT_REWARDS.get(event_type)
         if reward is None:
+            if event_type == 'recommendation_impression':
+                impression = self._find_impression(event, event['product_id'])
+                if impression and any(item.product_id == event['product_id'] for item in impression.candidates):
+                    self.outcomes.expose(impression.impression_id, event['product_id'],
+                                         self.clock() + self.feedback_window_seconds)
             self.features.observe(event)
             self._mark_processed(event_id)
             return FeedbackResult("observed_no_reward")
@@ -625,12 +674,15 @@ class AdaptiveRankingService:
         if event.get("product_id"):
             product_ids.append(event["product_id"])
         updates: list[tuple[str, Sequence[float], float]] = []
+        responses = []
         for product_id in dict.fromkeys(product_ids):
             try:
                 impression = self._find_impression(event, product_id)
             except (RuntimeError, ConnectionError, TimeoutError):
                 return FeedbackResult("state_unavailable")
             if impression is None:
+                continue
+            if self.outcomes.status(impression.impression_id, product_id) == 'closed':
                 continue
             displayed = next(
                 (
@@ -643,6 +695,7 @@ class AdaptiveRankingService:
             if displayed is None:
                 continue
             updates.append((product_id, displayed.features, reward))
+            responses.append((impression.impression_id, product_id))
         if not updates:
             self.features.observe(event)
             self._mark_processed(event_id)
@@ -651,9 +704,24 @@ class AdaptiveRankingService:
             self.bandit_state.update_many(updates)
         except (RuntimeError, ConnectionError, TimeoutError):
             return FeedbackResult("state_unavailable")
+        for impression_id, product_id in responses:
+            self.outcomes.respond(impression_id, product_id)
         self.features.observe(event)
         self._mark_processed(event_id)
         return FeedbackResult("learned", tuple(item[0] for item in updates), reward)
+
+    def settle_expired(self):
+        """Mature exposed recommendations without treating missing data as a click."""
+        settled = 0
+        for impression_id, product_id in self.outcomes.due(self.clock()):
+            impression = self.impressions.get(impression_id)
+            if impression and self.outcomes.status(impression_id, product_id) != 'responded':
+                candidate = next((item for item in impression.candidates if item.product_id == product_id), None)
+                if candidate:
+                    self.bandit_state.update_many(((product_id, candidate.features, 0.0),))
+                    settled += 1
+            self.outcomes.close(impression_id, product_id)
+        return settled
 
     def _mark_processed(self, event_id: str) -> None:
         self._processed_events[event_id] = None

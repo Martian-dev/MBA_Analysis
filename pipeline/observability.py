@@ -23,14 +23,19 @@ class ActivityLog:
         self.client = client
 
     def record(self, kind: str, payload: dict[str, Any]) -> str:
-        observed_at = datetime.now(timezone.utc).isoformat()
-        entry = {"kind": kind, "observed_at": observed_at, "payload": payload}
         pipe = self.client.pipeline()
-        pipe.xadd(STREAM_KEY, {"json": json.dumps(entry)}, maxlen=MAX_EVENTS, approximate=True)
-        pipe.hincrby(COUNTS_KEY, kind, 1)
+        self.enqueue(pipe, kind, payload)
         results = pipe.execute()
         event_id = results[0]
         return event_id.decode() if isinstance(event_id, bytes) else event_id
+
+    @staticmethod
+    def enqueue(pipe: Any, kind: str, payload: dict[str, Any]) -> None:
+        """Join the caller's state transaction without committing separately."""
+        observed_at = datetime.now(timezone.utc).isoformat()
+        entry = {"kind": kind, "observed_at": observed_at, "payload": payload}
+        pipe.xadd(STREAM_KEY, {"json": json.dumps(entry)}, maxlen=MAX_EVENTS, approximate=True)
+        pipe.hincrby(COUNTS_KEY, kind, 1)
 
     def snapshot(
         self,
@@ -45,12 +50,15 @@ class ActivityLog:
             events = [
                 event for event in events
                 if event["payload"].get("user_id") == user_id
-                and event["payload"].get("session_id") == session_id
+                and (session_id is None or event["payload"].get("session_id") == session_id)
             ][-limit:]
             counts = dict(Counter(event["kind"] for event in events))
         else:
             counts = {key: int(value) for key, value in self.client.hgetall(COUNTS_KEY).items()}
-        return {"events": events, "counts": counts, "last_id": events[-1]["id"] if events else "0-0"}
+        cursor = rows[0][0] if rows else '0-0'
+        if isinstance(cursor, bytes):
+            cursor = cursor.decode()
+        return {"events": events, "counts": counts, "last_id": cursor}
 
     @staticmethod
     def _decode(row: tuple[Any, dict[Any, Any]]) -> dict[str, Any]:
@@ -97,6 +105,12 @@ return redeemed
         return f"{COUPON_KEY_PREFIX}{coupon_id}"
 
     def issue(self, coupon: dict[str, Any]) -> None:
+        pipe = self.client.pipeline()
+        self.enqueue_issue(pipe, coupon)
+        pipe.execute()
+
+    @classmethod
+    def enqueue_issue(cls, pipe: Any, coupon: dict[str, Any]) -> None:
         fields = {
             "coupon_id": str(coupon["coupon_id"]),
             "user_id": str(coupon["user_id"]),
@@ -105,11 +119,9 @@ return redeemed
             "discount_percent": str(coupon["discount_percent"]),
             "issued_at": str(coupon["event_time"]),
         }
-        key = self._key(fields["coupon_id"])
-        pipe = self.client.pipeline()
+        key = cls._key(fields["coupon_id"])
         pipe.hset(key, mapping=fields)
         pipe.expire(key, COUPON_RETENTION_SECONDS)
-        pipe.execute()
 
     def available(
         self,
