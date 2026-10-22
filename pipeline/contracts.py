@@ -133,7 +133,7 @@ def validate_event(event: dict[str, Any]) -> dict[str, Any]:
     if event_type == "product_view_ended":
         dwell = event.get("dwell_seconds")
         if (isinstance(dwell, bool) or not isinstance(dwell, (int, float))
-                or not math.isfinite(dwell) or not 0 <= dwell <= 86_400):
+                or not 0 <= dwell <= 86_400 or not math.isfinite(dwell)):
             raise ValueError("product_view_ended requires a non-negative dwell_seconds")
 
     if event_type in {"cart_item_added", "cart_item_removed"}:

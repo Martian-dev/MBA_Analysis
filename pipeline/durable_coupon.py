@@ -80,7 +80,7 @@ class DurableCouponProcessor:
             transaction.execute()
             return decision, reason
 
-    def drain(self, publish) -> int:
+    def drain(self, publish, max_items=100) -> int:
         delivered = 0
         for coupon_id, raw in self.client.hscan_iter(OUTBOX_KEY, count=100):
             with self.client.lock(OUTBOX_KEY + ':lock:' + digest(coupon_id), timeout=30, blocking_timeout=5):
@@ -91,4 +91,6 @@ class DurableCouponProcessor:
                 publish(decision)
                 self.client.hdel(OUTBOX_KEY, coupon_id)
                 delivered += 1
+                if delivered >= max_items:
+                    break
         return delivered

@@ -15,6 +15,7 @@ def payload(**changes):
 @pytest.mark.parametrize("changes", [
     {"event_type": []}, {"event_type": {}},
     {"dwell_seconds": float("nan")}, {"dwell_seconds": float("inf")},
+    {'dwell_seconds': 10**1000},
     {"event_type": "cart_item_added", "quantity": 100},
     {"catalog_product_id": {}}, {"product_ids": [None]},
 ])

@@ -2,6 +2,7 @@
 from collections import Counter, defaultdict
 import json
 from pathlib import Path
+from itertools import zip_longest
 
 
 class HistoricalCandidates:
@@ -27,12 +28,21 @@ class HistoricalCandidates:
                 records.extend(json.loads(line) for line in file.read_text().splitlines() if line.strip())
         return cls(popularity, records)
 
+    @property
+    def has_collaborative(self):
+        return bool(self.collaborative)
+
     def ranked(self, historical_user_id=None):
         if historical_user_id is not None and str(historical_user_id) in self.by_user:
             for product_id, score in sorted(self.by_user[str(historical_user_id)], key=lambda item: (-item[1], item[0])):
                 yield product_id, 'als_personalized'
-        # New anonymous shoppers do not inherit an arbitrary historical profile.
-        for product_id in sorted(self.popularity, key=lambda product: (-self.popularity[product], product)):
-            yield product_id, 'popularity_fallback'
-        for product_id in sorted(self.collaborative, key=lambda product: (-self.collaborative[product], product)):
-            yield product_id, 'als_cold_start_fallback'
+        # Explicit 1:1 candidate blending prevents a large popularity catalog
+        # from starving the collaborative source. Anonymous users use aggregate
+        # collaborative evidence, never an arbitrary historical user's profile.
+        popular = sorted(self.popularity, key=lambda product: (-self.popularity[product], product))
+        collaborative = sorted(self.collaborative, key=lambda product: (-self.collaborative[product], product))
+        for als_product, popular_product in zip_longest(collaborative, popular):
+            if als_product is not None:
+                yield als_product, 'als_cold_start_fallback'
+            if popular_product is not None:
+                yield popular_product, 'popularity_fallback'

@@ -1,5 +1,7 @@
 import json
 import os
+import subprocess
+import time
 import uuid
 
 import pytest
@@ -78,6 +80,13 @@ def test_poison_records_are_decode_errors(raw):
         decode_event(raw)
 
 
+def test_oversized_numeric_dwell_is_a_poison_record_not_a_worker_crash():
+    payload = events()[-1]
+    payload['dwell_seconds'] = 10**1000
+    with pytest.raises(ValueError):
+        decode_event(json.dumps(payload).encode())
+
+
 def test_zero_reward_settlement_survives_service_restart(client):
     from pipeline.adaptive_redis import create_redis_adaptive_service
     namespace = 'audit-outcomes:' + uuid.uuid4().hex
@@ -101,3 +110,19 @@ def test_cart_snapshot_rehydrates_a_new_session_without_duplicate_adds(client):
     DurableCouponProcessor(client, Rules()).process(trace[1])
     DurableCouponProcessor(client, Rules()).process(trace[2])
     assert DurableCouponProcessor(client, Rules()).process(trace[3])[1] == 'coupon_issued'
+
+
+@pytest.mark.skipif(not os.getenv('REDIS_TEST_CONTAINER'), reason='Set by scripts/verify_audit.sh for AOF restart acceptance')
+def test_cart_and_view_survive_a_real_redis_container_restart(client):
+    container = os.environ['REDIS_TEST_CONTAINER']
+    assert container.startswith('mba-verification-redis-'), 'Only restart a verification-owned Redis container'
+    trace = events()
+    for event in trace[:-1]:
+        DurableCouponProcessor(client, Rules()).process(event)
+    subprocess.run(['docker', 'restart', container], check=True, capture_output=True, timeout=20)
+    for _ in range(100):
+        try:
+            client.ping(); break
+        except redis.RedisError:
+            time.sleep(.05)
+    assert DurableCouponProcessor(client, Rules()).process(trace[-1])[1] == 'coupon_issued'

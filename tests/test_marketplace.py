@@ -204,6 +204,20 @@ def test_product_recommendations_adapt_after_http_feedback(client, monkeypatch):
     assert all(item["impression_id"] for item in legacy_route["recommendations"])
 
 
+def test_als_candidate_reaches_the_http_response_with_large_popularity_catalog(client, monkeypatch):
+    from pipeline.candidates import HistoricalCandidates
+    monkeypatch.setattr(main, 'adaptive_service', create_adaptive_service())
+    excluded = {24852} | set(main.rules_df.loc[main.rules_df.antecedent_product_id.eq(24852), 'consequent_product_id'])
+    product_id = next(product_id for product_id in main.products_by_id if product_id not in excluded)
+    monkeypatch.setattr(main, 'historical_candidates', HistoricalCandidates(
+        {str(item['product_id']): 10_000 - index for index, item in enumerate(main.catalog_products)},
+        [{'user_id': 10, 'product_id': product_id, 'score': 1, 'rank': 1}]))
+    payload = client.get('/api/products/24852?user_id=shopper-test&session_id=s').get_json()
+    assert len(payload['related_products']) <= 6
+    assert any(item['product_id'] == product_id and item['recommendation_source'] == 'als_cold_start_fallback'
+               for item in payload['related_products'])
+
+
 def test_product_api_uses_historical_order_when_shared_redis_is_offline(client, monkeypatch):
     with client.session_transaction() as session:
         session['user_id'] = 'offline-shopper'

@@ -34,6 +34,8 @@ def test_writes_require_both_owned_identity_and_csrf():
         event = dict(event_id='e', event_type='cart_item_added', event_time='2026-10-22T12:00:00Z',
                      user_id=user, session_id='s', product_id='Banana')
         assert client.post('/api/events', json=event).status_code == 403
+        assert client.post('/api/events', json={**event, 'csrf_token': 'é'}).status_code == 403
+        assert client.post('/api/events', json={**event, 'csrf_token': '\ud800'}).status_code == 403
         assert client.post('/api/events', json={**event, 'user_id': 'victim'},
                            headers={'X-CSRF-Token': token}).status_code == 403
 
@@ -43,3 +45,4 @@ def test_operations_view_requires_separate_operator_access():
         identity(client)
         assert client.get('/viewer').status_code == 403
         assert client.get('/viewer?token=wrong').status_code == 403
+        assert client.get('/viewer?token=%C3%A9').status_code == 403

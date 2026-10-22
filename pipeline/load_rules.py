@@ -6,9 +6,7 @@ import argparse
 import json
 import os
 
-import redis
-
-from .rules import CATALOG_KEY, load_rules, rule_key
+from .rules import load_rules
 
 
 def main() -> None:

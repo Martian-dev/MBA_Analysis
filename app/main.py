@@ -29,7 +29,7 @@ from pipeline.adaptive_redis import create_redis_adaptive_service
 from pipeline.observability import ActivityLog, CouponLedger
 from pipeline.serialization import JsonSerializer
 from pipeline.topics import EVENTS_TOPIC
-from app.identity import configure_identity, shopper, authorize, operator, operator_token
+from app.identity import configure_identity, shopper, authorize, operator, operator_token, tokens_equal
 from app.order_store import OrderStore
 from pipeline.artifacts import validate_rules
 from pipeline.candidates import HistoricalCandidates
@@ -56,7 +56,7 @@ historical_candidates = HistoricalCandidates.load(
     BASE_DIR / 'popularity.json',
     os.getenv('ALS_CANDIDATES_PATH') or RULES_PATH.parent / 'als_candidates.json',
 )
-app.config.setdefault("ORDER_STORE_PATH", str(DEFAULT_ORDER_STORE))
+app.config.setdefault("ORDER_STORE_PATH", os.getenv('ORDER_STORE_PATH', str(DEFAULT_ORDER_STORE)))
 
 RULE_ID_COLUMNS = ("antecedent_product_id", "consequent_product_id")
 RULE_NAME_COLUMNS = ("antecedents", "consequents")
@@ -289,6 +289,7 @@ def _related_products(product: dict[str, Any], limit: int = 6) -> list[dict[str,
     matches = matches.sort_values(['_ranking_score', 'consequents'], ascending=[False, True])
     chosen: list[dict[str, Any]] = []
     seen = {product["product_id"]}
+    rule_limit = max(1, limit - 2) if historical_candidates.has_collaborative else limit
     for _, rule in matches.iterrows():
         candidate = (
             products_by_id.get(int(rule["consequent_product_id"]))
@@ -303,8 +304,8 @@ def _related_products(product: dict[str, Any], limit: int = 6) -> list[dict[str,
             item['prior_score'] = 1 + float(rule['_ranking_score'])
             chosen.append(item)
             seen.add(candidate["product_id"])
-            if len(chosen) >= limit:
-                return chosen
+            if len(chosen) >= rule_limit:
+                break
 
     for product_id, source in historical_candidates.ranked(session.get('historical_user_id')):
         if product_id in products_by_id and product_id not in seen:
@@ -359,11 +360,19 @@ def _adaptive_rank_products(
             candidates=candidates,
             snapshot_version=rules_snapshot_version,
             cart_product_ids=[str(product["product_id"]) for product in (cart_products or [])],
-            limit=limit,
+            limit=len(candidates) if historical_candidates.has_collaborative else limit,
         )
     by_id = {str(item["product_id"]): item for item in products}
     ranked: list[dict[str, Any]] = []
-    for ranked_item in decision["items"]:
+    selected_items = decision['items'][:limit]
+    if historical_candidates.has_collaborative and not any(
+        by_id[item['product_id']].get('recommendation_source', '').startswith('als_') for item in selected_items
+    ):
+        collaborative = next((item for item in decision['items'][limit:]
+                              if by_id[item['product_id']].get('recommendation_source', '').startswith('als_')), None)
+        if collaborative and selected_items:
+            selected_items[-1] = collaborative
+    for ranked_item in selected_items:
         product = by_id[ranked_item["product_id"]]
         product["impression_id"] = decision["impression_id"]
         product["policy_version"] = decision["policy_version"]
@@ -395,6 +404,7 @@ def _cart_candidates(cart_products, limit=24):
     matches['_score'] = matches.confidence * matches.lift.map(math.log1p)
     matches = matches.sort_values(['_score', 'consequents'], ascending=[False, True])
     selected = []; seen = set(cart_ids)
+    rule_limit = max(1, limit - 4) if historical_candidates.has_collaborative else limit
     for _, rule in matches.iterrows():
         candidate = _product_for(int(rule.consequent_product_id)) if 'consequent_product_id' in rule else _product_for(rule.consequents)
         supporting = _product_for(int(rule.antecedent_product_id)) if 'antecedent_product_id' in rule else _product_for(rule.antecedents)
@@ -405,8 +415,8 @@ def _cart_candidates(cart_products, limit=24):
                 lift=float(rule.lift), prior_score=1 + float(rule['_score']),
                 recommendation_id=f"cart:{supporting['product_id']}:{candidate['product_id']}")
             selected.append(item); seen.add(candidate['product_id'])
-            if len(selected) >= limit:
-                return selected
+            if len(selected) >= rule_limit:
+                break
     for product_id, source in historical_candidates.ranked(session.get('historical_user_id')):
         if product_id not in seen and product_id in products_by_id:
             item = _public_product(products_by_id[product_id])
@@ -448,7 +458,7 @@ def order_page(order_id: str):
 @app.get("/viewer")
 def viewer():
     token = request.args.get('token')
-    if token is not None and secrets.compare_digest(token, operator_token()):
+    if token is not None and tokens_equal(token, operator_token()):
         session['operator'] = True
         return redirect('/viewer')
     if not operator():

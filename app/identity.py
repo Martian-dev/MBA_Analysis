@@ -26,6 +26,10 @@ def configure_identity(app):
                       SESSION_COOKIE_SECURE=os.getenv('COOKIE_SECURE') == '1')
 
 
+def tokens_equal(supplied, expected):
+    return isinstance(supplied, str) and supplied.isascii() and secrets.compare_digest(supplied, expected)
+
+
 def shopper():
     if 'user_id' not in session:
         session['user_id'] = 'shopper-' + secrets.token_hex(16)
@@ -39,7 +43,7 @@ def authorize(user_id, payload=None):
         abort(403, description='This shopper identity belongs to another browser')
     if request.method == 'POST':
         token = request.headers.get('X-CSRF-Token') or (payload or {}).get('csrf_token', '')
-        if not isinstance(token, str) or not secrets.compare_digest(token, session['csrf_token']):
+        if not tokens_equal(token, session['csrf_token']):
             abort(403, description='Invalid CSRF token')
 
 

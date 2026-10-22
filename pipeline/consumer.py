@@ -4,18 +4,16 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import time
 
 import redis
-from kafka import KafkaConsumer, KafkaProducer, TopicPartition
-from kafka.errors import KafkaError
-from kafka.structs import OffsetAndMetadata
+from kafka import KafkaConsumer, KafkaProducer
 
 from .durable_coupon import DurableCouponProcessor
 from .observability import ActivityLog
 from .rules import RedisRuleLookup
 from .serialization import JsonSerializer
 from .topics import COUPONS_TOPIC, EVENTS_TOPIC
+from .kafka_worker import consume
 
 
 def decode_event(raw):
@@ -47,37 +45,20 @@ def main():
     def publish(decision):
         producer.send(COUPONS_TOPIC, key=decision['user_id'].encode(), value=decision).get(timeout=10)
         print(json.dumps(decision), flush=True)
-    processed = 0
+    def handle(message):
+        try:
+            payload = decode_event(message.value)
+        except ValueError as exc:
+            ActivityLog(client).record('event_rejected', {
+                'reason': str(exc), 'topic': message.topic,
+                'partition': message.partition, 'offset': message.offset,
+                'raw': repr(message.value)[:2048],
+            })
+        else:
+            processor.process(payload)
     try:
-        while True:
-            try:
-                processor.drain(publish)
-                batches = consumer.poll(timeout_ms=1000, max_records=100)
-                for partition, messages in batches.items():
-                    for message in messages:
-                        while True:
-                            try:
-                                try:
-                                    payload = decode_event(message.value)
-                                except ValueError as exc:
-                                    ActivityLog(client).record('event_rejected', {
-                                        'reason': str(exc), 'topic': message.topic,
-                                        'partition': message.partition, 'offset': message.offset,
-                                        'raw': repr(message.value)[:2048],
-                                    })
-                                else:
-                                    processor.process(payload)
-                                    processor.drain(publish)
-                                consumer.commit({TopicPartition(message.topic, message.partition):
-                                    OffsetAndMetadata(message.offset + 1, '', -1)})
-                                break
-                            except (redis.RedisError, KafkaError):
-                                time.sleep(1)
-                        processed += 1
-                        if args.max_events and processed >= args.max_events:
-                            return
-            except (redis.RedisError, KafkaError):
-                time.sleep(1)
+        consume(consumer, handle, idle=lambda: processor.drain(publish, max_items=1), max_events=args.max_events)
+        processor.drain(publish)
     except KeyboardInterrupt:
         pass
     finally:
