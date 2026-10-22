@@ -5,6 +5,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     const stage = document.querySelector('[data-product-stage]');
     const relatedGrid = document.querySelector('[data-related-grid]');
     const featured = document.querySelector('[data-featured-pairing]');
+    const featuredSection = document.querySelector('[data-featured-section]');
     const viewStartedAt = performance.now();
     let product;
     let viewEnded = false;
@@ -19,12 +20,42 @@ document.addEventListener('DOMContentLoaded', async () => {
         stage.querySelector('[data-stage-add]').addEventListener('click', () => { Market.addProduct(product, 1, 'product_detail'); renderStage(); renderFeatured(); });
     }
 
-    function renderFeatured() {
+    async function renderFeatured() {
         const cart = Market.getCart();
-        if (!cart.length) { featured.innerHTML = '<div class="pairing-placeholder">Add something to your basket and we’ll connect the dots here.</div>'; return; }
-        const supporting = cart[cart.length - 1];
-        featured.innerHTML = `<div class="pairing-rail__item"><small>In your basket</small>${Market.productArtwork(supporting)}<strong>${Market.escapeHtml(supporting.product_name)}</strong></div><div class="pairing-connector" aria-hidden="true"><span></span><svg viewBox="0 0 24 24"><path d="M5 12h14M13 6l6 6-6 6"/></svg></div><div class="pairing-rail__item pairing-rail__item--next"><small>You’re considering</small>${Market.productArtwork(product)}<strong>${Market.escapeHtml(product.product_name)}</strong><button type="button" class="text-button" data-featured-add>Add the pairing</button></div>`;
-        featured.querySelector('[data-featured-add]').addEventListener('click', () => Market.addProduct(product, 1, 'intent_bridge'));
+        featuredSection.hidden = true;
+        featured.innerHTML = '';
+        if (!cart.length) return;
+
+        try {
+            const response = await fetch('/api/cart-recommend', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({cart: cart.map(item => item.product_id), user_id: Market.identity.userId, session_id: Market.identity.sessionId}),
+            });
+            if (!response.ok) throw new Error('Basket recommendations unavailable');
+            const data = await response.json();
+            const cartIds = new Set(cart.map(item => Number(item.product_id)));
+            const recommendation = (data.recommendations || []).find(item => !cartIds.has(Number(item.product_id)));
+            if (!recommendation) return;
+
+            const sourceLabel = recommendation.recommendation_source === 'historical_rule' ? 'Historical basket rule' : 'Catalog fallback';
+            const lift = Number(recommendation.lift);
+            const liftLabel = Number.isFinite(lift) ? `<span>${Market.escapeHtml(lift.toFixed(2))}× lift</span>` : '';
+            featured.innerHTML = `${Market.productArtwork(recommendation)}<div class="basket-result__copy"><p class="basket-result__because">Because <strong>${Market.escapeHtml(recommendation.supporting_product_name)}</strong> is in your basket</p><a href="/product/${recommendation.product_id}" data-product-link data-source="product_basket_recommendation" data-product-id="${recommendation.product_id}" data-product-name="${Market.escapeHtml(recommendation.product_name)}" data-impression-id="${Market.escapeHtml(recommendation.impression_id || '')}" data-policy-version="${Market.escapeHtml(recommendation.policy_version || '')}" data-snapshot-version="${Market.escapeHtml(recommendation.snapshot_version || '')}"><h3>${Market.escapeHtml(recommendation.product_name)}</h3></a><p>${Market.escapeHtml(recommendation.recommendation_reason || 'Recommended for this basket')}</p><div class="basket-result__evidence"><span>${sourceLabel}</span><span>Live ranked</span>${liftLabel}</div></div><button type="button" class="button button--secondary" data-featured-add>Add recommendation</button>`;
+            featuredSection.hidden = false;
+            featured.querySelector('[data-featured-add]').addEventListener('click', () => {
+                Market.addProduct(recommendation, 1, 'product_basket_recommendation');
+                renderFeatured();
+            });
+            Market.publish('recommendation_impression', {
+                product_id: recommendation.product_name, catalog_product_id: recommendation.product_id,
+                product_name: recommendation.product_name, impression_id: recommendation.impression_id,
+                policy_version: recommendation.policy_version, snapshot_version: recommendation.snapshot_version,
+                placement: 'product_basket_recommendation', supporting_product_id: recommendation.supporting_product_id,
+            }).catch(() => {});
+        } catch (_) {
+            featuredSection.hidden = true;
+        }
     }
 
     function endView() {
@@ -38,7 +69,7 @@ document.addEventListener('DOMContentLoaded', async () => {
         Market.getCart().forEach(item => detailParams.append('cart_product_id', String(item.product_id)));
         const response = await fetch(`/api/products/${productId}?${detailParams}`); if (!response.ok) throw new Error();
         const data = await response.json(); product = data.product;
-        renderStage(); renderFeatured();
+        renderStage(); await renderFeatured();
         relatedGrid.innerHTML = data.related_products.map(item => Market.productCard(item, {source: 'product_related'})).join('');
         Market.publish('product_view_started', {product_id: product.product_name, catalog_product_id: product.product_id, product_name: product.product_name, referrer: document.referrer || null}).catch(() => {});
         data.related_products.forEach(item => Market.publish('recommendation_impression', {product_id: item.product_name, catalog_product_id: item.product_id, product_name: item.product_name, impression_id: item.impression_id, policy_version: item.policy_version, snapshot_version: item.snapshot_version, placement: 'product_related', supporting_product_id: product.product_id}).catch(() => {}));

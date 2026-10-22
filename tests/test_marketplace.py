@@ -6,6 +6,7 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -62,6 +63,19 @@ def test_deep_linked_product_page_and_detail_api_include_related_products(client
     assert payload["related_products"]
     assert all(item["product_id"] != 24852 for item in payload["related_products"])
     assert client.get("/api/products/999999").status_code == 404
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is required for the browserless UI regression test")
+def test_product_page_renders_a_distinct_basket_supported_recommendation():
+    completed = subprocess.run(
+        ["node", "tests/frontend/product_page_recommendation.mjs"],
+        cwd=Path(__file__).parents[1],
+        capture_output=True,
+        text=True,
+        timeout=10,
+    )
+
+    assert completed.returncode == 0, completed.stderr or completed.stdout
 
 
 def test_spark_serving_artifact_becomes_versioned_http_prior():
