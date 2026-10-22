@@ -37,6 +37,10 @@
           <div class="panel-heading"><div><p class="eyebrow">02 / THE LAST MATCH</p><h2 id="decision-title">Coupon decision</h2></div></div>
           <div id="latest-decision" class="decision-content"><p class="empty-state">No coupon has been issued yet. A long product view needs a matching item in the cart.</p></div>
         </section>
+        <section class="panel coupon-ledger" aria-labelledby="available-title">
+          <div class="panel-heading"><div><p class="eyebrow">ACTIVE LEDGER</p><h2 id="available-title">Available coupons</h2></div><span class="panel-hint"><span id="available-coupon-count">0</span> unredeemed</span></div>
+          <ol class="coupon-list" id="available-coupons" aria-live="polite"><li class="empty-state">No coupons are available yet.</li></ol>
+        </section>
         <section class="panel guide" aria-labelledby="guide-title"><div class="panel-heading"><div><p class="eyebrow">03 / ELIGIBILITY</p><h2 id="guide-title">The rule of three</h2></div></div><ol class="rule-list"><li><span>01</span><div><strong>Someone has an item in their cart.</strong><p>The existing cart item is the rule antecedent for this shopper session.</p></div></li><li><span>02</span><div><strong>They hesitate on another product.</strong><p>A view must end after at least 45 seconds of event time.</p></div></li><li><span>03</span><div><strong>The association is strong enough.</strong><p>Lift ≥ 1.5, confidence ≥ 0.10, and support ≥ 0.012 are required before a mock 5% coupon is issued.</p></div></li></ol></section>
       </aside>
     </div>

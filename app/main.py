@@ -391,6 +391,23 @@ def activity_snapshot():
         return jsonify({"error": "Redis is unavailable. Start the live stack."}), 503
 
 
+@app.get("/api/coupons/available")
+def available_coupons():
+    user_id = request.args.get("user_id")
+    session_id = request.args.get("session_id")
+    if (user_id is None) != (session_id is None):
+        return jsonify({"error": "user_id and session_id must be supplied together"}), 400
+    try:
+        available = coupon_ledger().available(user_id=user_id, session_id=session_id)
+    except RedisError:
+        return jsonify({"error": "Redis is unavailable. Start the live stack."}), 503
+    return jsonify({
+        "coupons": available,
+        "total": len(available),
+        "scope": "session" if session_id is not None else "all_sessions",
+    })
+
+
 @app.post("/api/events")
 def publish_storefront_event():
     global _event_retry_after

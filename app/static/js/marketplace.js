@@ -5,7 +5,6 @@
     const CART_PREFIX = 'basket-signal-cart-';
     const COUPON_PREFIX = 'basket-signal-coupons-';
     const CART_KEY = `${CART_PREFIX}${catalogScope}`;
-    const COUPON_KEY = `${COUPON_PREFIX}${catalogScope}`;
     const USER_KEY = 'basket-signal-user';
     const SESSION_KEY = 'basket-signal-session';
     const listeners = new Set();
@@ -16,17 +15,6 @@
     const safeParse = (value, fallback) => {
         try { return JSON.parse(value) ?? fallback; } catch (_) { return fallback; }
     };
-    const removeStaleCatalogState = () => {
-        try {
-            for (let index = localStorage.length - 1; index >= 0; index -= 1) {
-                const key = localStorage.key(index);
-                if ((key?.startsWith(CART_PREFIX) && key !== CART_KEY) || (key?.startsWith(COUPON_PREFIX) && key !== COUPON_KEY)) {
-                    localStorage.removeItem(key);
-                }
-            }
-        } catch (_) { /* Storage can be unavailable in privacy-restricted browsers. */ }
-    };
-    removeStaleCatalogState();
     const randomId = prefix => `${prefix}-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`}`;
     const storageValue = (storage, key, prefix) => {
         try {
@@ -39,8 +27,24 @@
         userId: storageValue(localStorage, USER_KEY, 'shopper'),
         sessionId: storageValue(sessionStorage, SESSION_KEY, 'session'),
     };
+    const COUPON_KEY = `${COUPON_PREFIX}${catalogScope}-${identity.sessionId}`;
+    const removeStaleCatalogState = () => {
+        try {
+            for (let index = localStorage.length - 1; index >= 0; index -= 1) {
+                const key = localStorage.key(index);
+                if ((key?.startsWith(CART_PREFIX) && key !== CART_KEY) || key?.startsWith(COUPON_PREFIX)) {
+                    localStorage.removeItem(key);
+                }
+            }
+            for (let index = sessionStorage.length - 1; index >= 0; index -= 1) {
+                const key = sessionStorage.key(index);
+                if (key?.startsWith(COUPON_PREFIX) && key !== COUPON_KEY) sessionStorage.removeItem(key);
+            }
+        } catch (_) { /* Storage can be unavailable in privacy-restricted browsers. */ }
+    };
+    removeStaleCatalogState();
     let cart = safeParse(localStorage.getItem(CART_KEY), {});
-    let coupons = safeParse(localStorage.getItem(COUPON_KEY), {});
+    let coupons = safeParse(sessionStorage.getItem(COUPON_KEY), {});
 
     const escapeHtml = value => String(value ?? '').replace(/[&<>'"]/g, character => ({
         '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
@@ -87,7 +91,7 @@
 
     function persist() {
         localStorage.setItem(CART_KEY, JSON.stringify(cart));
-        localStorage.setItem(COUPON_KEY, JSON.stringify(coupons));
+        sessionStorage.setItem(COUPON_KEY, JSON.stringify(coupons));
         renderCart();
         listeners.forEach(listener => listener({cart: getCart(), coupons: getCoupons()}));
     }
@@ -313,7 +317,7 @@
         publish, publishRecommendationImpression, getCartRecommendations,
         toast, addProduct, changeQuantity, getCart, getCoupons, totals, persist,
         subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
-        clearOrder() { cart = {}; coupons = {}; localStorage.removeItem(CART_KEY); localStorage.removeItem(COUPON_KEY); persist(); },
+        clearOrder() { cart = {}; coupons = {}; localStorage.removeItem(CART_KEY); sessionStorage.removeItem(COUPON_KEY); persist(); },
         newOrderId() { return `BS-${(globalThis.crypto?.randomUUID?.() || randomId('order')).replace(/[^A-Za-z0-9-]/g, '')}`; },
     };
     renderCart(); connectActivity();

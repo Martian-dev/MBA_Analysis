@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections import Counter
 from datetime import datetime, timezone
 from typing import Any
 
+from .coupon_engine import CouponClaim
+
 STREAM_KEY = "mba:observer:activity:v1"
 COUNTS_KEY = "mba:observer:counts:v1"
 MAX_EVENTS = 1000
 COUPON_KEY_PREFIX = "mba:coupon:v1:"
+COUPON_CLAIM_KEY_PREFIX = "mba:coupon-claim:v1:"
 COUPON_RETENTION_SECONDS = 7 * 24 * 60 * 60
 
 
@@ -107,6 +111,36 @@ return redeemed
         pipe.expire(key, COUPON_RETENTION_SECONDS)
         pipe.execute()
 
+    def available(
+        self,
+        *,
+        user_id: str | None = None,
+        session_id: str | None = None,
+    ) -> list[dict[str, str]]:
+        """Return active, unredeemed coupons, optionally for one session."""
+        keys = list(self.client.scan_iter(match=f"{COUPON_KEY_PREFIX}*", count=200))
+        if not keys:
+            return []
+        pipe = self.client.pipeline()
+        for key in keys:
+            pipe.hgetall(key)
+        coupons = []
+        for record in pipe.execute():
+            normalized = {
+                (key.decode() if isinstance(key, bytes) else str(key)):
+                (value.decode() if isinstance(value, bytes) else str(value))
+                for key, value in record.items()
+            }
+            if not normalized or normalized.get("redeemed_order_id"):
+                continue
+            if user_id is not None and normalized.get("user_id") != user_id:
+                continue
+            if session_id is not None and normalized.get("session_id") != session_id:
+                continue
+            coupons.append(normalized)
+        coupons.sort(key=lambda coupon: coupon.get("issued_at", ""), reverse=True)
+        return coupons
+
     def redeem(
         self,
         coupon_ids: list[str],
@@ -150,3 +184,31 @@ return redeemed
         for coupon_id in normalized_ids:
             pipe.hgetall(self._key(coupon_id))
         return [dict(record) for record in pipe.execute()]
+
+
+class RedisCouponClaimStore:
+    """Atomic session/product frequency cap shared by coupon consumers."""
+
+    def __init__(self, client: Any, ttl_seconds: int = COUPON_RETENTION_SECONDS):
+        self.client = client
+        self.ttl_seconds = ttl_seconds
+
+    @staticmethod
+    def _key(coupon_claim: CouponClaim) -> str:
+        identity = "\0".join((
+            coupon_claim.user_id,
+            coupon_claim.session_id,
+            coupon_claim.product_id,
+        )).encode("utf-8")
+        return f"{COUPON_CLAIM_KEY_PREFIX}{hashlib.sha256(identity).hexdigest()}"
+
+    def claim(self, coupon_claim: CouponClaim) -> bool:
+        return bool(self.client.set(
+            self._key(coupon_claim),
+            "issued",
+            nx=True,
+            ex=self.ttl_seconds,
+        ))
+
+    def release(self, coupon_claim: CouponClaim) -> None:
+        self.client.delete(self._key(coupon_claim))

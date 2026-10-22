@@ -350,6 +350,59 @@ def test_closed_basket_drawer_is_inert_modal_markup(client):
     assert b'aria-hidden="true" inert' in page.data
 
 
+def test_available_coupon_api_and_viewer_expose_session_owned_offers(client, monkeypatch):
+    class Ledger:
+        def available(self, **kwargs):
+            assert kwargs == {"user_id": None, "session_id": None}
+            return [{
+                "coupon_id": "coupon:test",
+                "user_id": "shopper-test",
+                "session_id": "session-test",
+                "product_id": "Banana",
+                "discount_percent": "5",
+                "issued_at": "2026-10-21T12:00:00+00:00",
+            }]
+
+    monkeypatch.setattr(main, "coupon_ledger", lambda: Ledger())
+    response = client.get("/api/coupons/available")
+
+    assert response.status_code == 200
+    assert response.get_json()["coupons"][0]["session_id"] == "session-test"
+    assert response.get_json()["total"] == 1
+    assert b'id="available-coupons"' in client.get("/viewer").data
+
+
+def test_available_coupon_api_requires_complete_session_identity(client):
+    response = client.get("/api/coupons/available?user_id=shopper-test")
+
+    assert response.status_code == 400
+
+
+def test_available_coupon_api_returns_the_complete_active_ledger(client, monkeypatch):
+    class Ledger:
+        def available(self, **kwargs):
+            return [
+                {"coupon_id": f"coupon:{index}", "session_id": f"session:{index}"}
+                for index in range(3)
+            ]
+
+    monkeypatch.setattr(main, "coupon_ledger", lambda: Ledger())
+    payload = client.get("/api/coupons/available").get_json()
+
+    assert payload["total"] == 3
+    assert len(payload["coupons"]) == 3
+
+
+def test_browser_coupon_cache_is_session_scoped():
+    source = (Path(__file__).parents[1] / "app/static/js/marketplace.js").read_text()
+
+    assert "sessionStorage.getItem(COUPON_KEY)" in source
+    assert "sessionStorage.setItem(COUPON_KEY" in source
+    assert "sessionStorage.removeItem(COUPON_KEY)" in source
+    assert "localStorage.getItem(COUPON_KEY)" not in source
+    assert "localStorage.setItem(COUPON_KEY" not in source
+
+
 def test_checkout_rejects_empty_or_malformed_orders(client):
     response = client.post("/api/checkout", json={"order_id": "BS-short"})
     assert response.status_code == 400

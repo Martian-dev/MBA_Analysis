@@ -119,9 +119,10 @@ The demo defaults are deliberately explicit and configurable:
 - Discount: 5 percent
 - A coupon is issued only when the viewed product is not already in the cart.
 - The strongest qualifying supporting cart item wins.
-- A user/product pair receives at most one coupon decision per engine lifetime.
+- A shopper/session/product combination receives at most one coupon while the
+  seven-day Redis claim is active, including across consumer restarts.
 
-The storefront publishes events for its own browser-scoped `user_id` and `session_id`, and filters coupon activity back to that same pair. The Signal Room intentionally remains global for operators. Dwell time alone is not sufficient: the association must also pass the rule-quality thresholds. This is a demonstration policy, not evidence that a 5% discount increases conversion. Evaluation and guardrails are separate work.
+The storefront publishes events for its own browser-scoped `user_id` and `session_id`, and filters coupon activity back to that same pair. Coupon issuance, browser storage, and redemption are session-owned: the same product is capped once per session, and a coupon cannot be applied by another session. The Signal Room intentionally remains global for operators and labels each active, unredeemed coupon with its owning shopper and session. Dwell time alone is not sufficient: the association must also pass the rule-quality thresholds. This is a demonstration policy, not evidence that a 5% discount increases conversion. Evaluation and guardrails are separate work.
 
 ## Batch rules: correctness requirements
 

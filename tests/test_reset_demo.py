@@ -1,4 +1,10 @@
-from pipeline.observability import COUPON_KEY_PREFIX, CouponLedger
+from pipeline.coupon_engine import CouponClaim
+from pipeline.observability import (
+    COUPON_CLAIM_KEY_PREFIX,
+    COUPON_KEY_PREFIX,
+    CouponLedger,
+    RedisCouponClaimStore,
+)
 from pipeline.reset_demo import reset_redis
 
 
@@ -40,6 +46,12 @@ class MemoryRedis:
     def hset(self, key, mapping):
         self.hashes.setdefault(key, {}).update(mapping)
 
+    def set(self, key, value, *, nx=False, ex=None):
+        if nx and key in self.values:
+            return False
+        self.values[key] = value
+        return True
+
     def eval(self, script, key_count, *values):
         del script
         keys = values[:key_count]
@@ -63,7 +75,8 @@ class MemoryRedis:
     def scan_iter(self, match, count):
         del count
         prefix = match.removesuffix("*")
-        return (key for key in list(self.hashes) if key.startswith(prefix))
+        keys = set(self.hashes) | set(self.values)
+        return (key for key in keys if key.startswith(prefix))
 
     def delete(self, *keys):
         for key in keys:
@@ -83,6 +96,9 @@ def test_demo_reset_clears_redemption_ledger_for_a_fresh_coupon(monkeypatch):
         "event_time": "2026-10-21T12:00:00+00:00",
     }
     ledger.issue(coupon)
+    claim_store = RedisCouponClaimStore(client)
+    coupon_claim = CouponClaim("user", "session", "Banana")
+    claim_store.claim(coupon_claim)
     assert ledger.redeem(
         [coupon["coupon_id"]], user_id="user", session_id="session", order_id="BS-first"
     )
@@ -96,8 +112,59 @@ def test_demo_reset_clears_redemption_ledger_for_a_fresh_coupon(monkeypatch):
     monkeypatch.setattr("pipeline.reset_demo.redis.Redis.from_url", lambda *args, **kwargs: client)
     reset_redis("redis://example")
     assert not any(key.startswith(COUPON_KEY_PREFIX) for key in client.hashes)
+    assert claim_store._key(coupon_claim) not in client.values
 
     ledger.issue(coupon)
     assert ledger.redeem(
         [coupon["coupon_id"]], user_id="user", session_id="session", order_id="BS-fresh"
     )
+
+
+def test_available_coupons_are_unredeemed_and_can_be_scoped_to_one_session():
+    client = MemoryRedis()
+    ledger = CouponLedger(client)
+    first = {
+        "coupon_id": "coupon:first",
+        "user_id": "user",
+        "session_id": "session-a",
+        "product_id": "Banana",
+        "discount_percent": 5,
+        "event_time": "2026-10-21T12:00:00+00:00",
+    }
+    second = {
+        **first,
+        "coupon_id": "coupon:second",
+        "session_id": "session-b",
+        "product_id": "Organic Avocado",
+        "event_time": "2026-10-21T12:01:00+00:00",
+    }
+    ledger.issue(first)
+    ledger.issue(second)
+
+    assert [coupon["coupon_id"] for coupon in ledger.available()] == [
+        "coupon:second", "coupon:first"
+    ]
+    assert [coupon["coupon_id"] for coupon in ledger.available(
+        user_id="user", session_id="session-a"
+    )] == ["coupon:first"]
+
+    ledger.redeem(
+        [first["coupon_id"]],
+        user_id="user",
+        session_id="session-a",
+        order_id="BS-redeemed",
+    )
+    assert [coupon["coupon_id"] for coupon in ledger.available()] == ["coupon:second"]
+
+
+def test_redis_coupon_claim_is_atomic_and_session_scoped():
+    claims = RedisCouponClaimStore(MemoryRedis())
+    first_session = CouponClaim("user", "session-a", "Banana")
+    second_session = CouponClaim("user", "session-b", "Banana")
+
+    assert claims.claim(first_session) is True
+    assert claims.claim(first_session) is False
+    claims.release(first_session)
+    assert claims.claim(first_session) is True
+    assert claims.claim(second_session) is True
+    assert claims._key(first_session).startswith(COUPON_CLAIM_KEY_PREFIX)

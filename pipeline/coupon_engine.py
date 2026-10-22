@@ -13,6 +13,37 @@ class RuleLookup(Protocol):
     def lookup(self, antecedent: str, consequent: str) -> dict[str, Any] | None: ...
 
 
+@dataclass(frozen=True)
+class CouponClaim:
+    user_id: str
+    session_id: str
+    product_id: str
+
+
+class CouponClaimStore(Protocol):
+    def claim(self, coupon_claim: CouponClaim) -> bool: ...
+
+    def release(self, coupon_claim: CouponClaim) -> None: ...
+
+
+class InMemoryCouponClaimStore:
+    def __init__(self, max_claims: int = 10_000) -> None:
+        self.max_claims = max_claims
+        self._claims: OrderedDict[CouponClaim, None] = OrderedDict()
+
+    def claim(self, coupon_claim: CouponClaim) -> bool:
+        if coupon_claim in self._claims:
+            return False
+        self._claims[coupon_claim] = None
+        self._claims.move_to_end(coupon_claim)
+        if len(self._claims) > self.max_claims:
+            self._claims.popitem(last=False)
+        return True
+
+    def release(self, coupon_claim: CouponClaim) -> None:
+        self._claims.pop(coupon_claim, None)
+
+
 @dataclass
 class UserState:
     cart: set[str] = field(default_factory=set)
@@ -28,6 +59,7 @@ class CouponEngine:
         min_confidence: float = 0.10,
         min_support: float = 0.012,
         discount_percent: int = 5,
+        claims: CouponClaimStore | None = None,
     ):
         self.rules = rules
         self.dwell_threshold_seconds = dwell_threshold_seconds
@@ -35,14 +67,20 @@ class CouponEngine:
         self.min_confidence = min_confidence
         self.min_support = min_support
         self.discount_percent = discount_percent
+        self.claims = claims if claims is not None else InMemoryCouponClaimStore()
         self._users: OrderedDict[tuple[str, str], UserState] = OrderedDict()
-        # Coupon frequency is customer-scoped rather than session-scoped. A
-        # new session for the same shopper must not reset the offer guardrail.
-        self._issued_products: OrderedDict[tuple[str, str], None] = OrderedDict()
 
     def process(self, event: dict[str, Any]) -> dict[str, Any] | None:
         decision, _ = self.evaluate(event)
         return decision
+
+    def release_claim(self, decision: dict[str, Any]) -> None:
+        """Allow an uncommitted coupon delivery to be retried."""
+        self.claims.release(CouponClaim(
+            str(decision["user_id"]),
+            str(decision["session_id"]),
+            str(decision["product_id"]),
+        ))
 
     def evaluate(self, event: dict[str, Any]) -> tuple[dict[str, Any] | None, str]:
         """Apply a shopper event and return the observable decision reason."""
@@ -81,9 +119,6 @@ class CouponEngine:
             return None, "below_dwell_threshold"
         if product in state.cart:
             return None, "product_in_cart"
-        if (event["user_id"], product) in self._issued_products:
-            return None, "coupon_already_issued"
-
         best: tuple[float, float, float, str, dict[str, Any]] | None = None
         saw_rule = False
         rejected_for_confidence = False
@@ -117,12 +152,11 @@ class CouponEngine:
                 return None, "no_qualifying_rule"
             return None, "no_qualifying_rule"
 
+        coupon_claim = CouponClaim(event["user_id"], event["session_id"], product)
+        if not self.claims.claim(coupon_claim):
+            return None, "coupon_already_issued"
+
         lift, _, _, supporting_item, metrics = best
-        customer_product = (event["user_id"], product)
-        self._issued_products[customer_product] = None
-        self._issued_products.move_to_end(customer_product)
-        if len(self._issued_products) > 10_000:
-            self._issued_products.popitem(last=False)
         return {
             "event_type": "coupon_issued",
             "event_time": event["event_time"],

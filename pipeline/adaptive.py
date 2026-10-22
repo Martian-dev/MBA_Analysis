@@ -13,6 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any, Iterable, Mapping, Protocol, Sequence
 
 from .contracts import validate_event
+from .coupon_engine import CouponClaim
 
 
 FEATURE_NAMES = (
@@ -404,7 +405,7 @@ class CouponGuardrails:
         self.min_confidence = min_confidence
         self.min_support = min_support
         self.max_issued = max_issued
-        self._issued: OrderedDict[tuple[str, str], None] = OrderedDict()
+        self._issued: OrderedDict[CouponClaim, None] = OrderedDict()
 
     def suppression_reason(
         self, request: RankingRequest, candidate: HistoricalCandidate
@@ -424,14 +425,17 @@ class CouponGuardrails:
             return "below_minimum_confidence"
         if candidate.support < self.min_support:
             return "below_minimum_support"
-        if (request.user_id, candidate.product_id) in self._issued:
+        claim = CouponClaim(request.user_id, request.session_id, candidate.product_id)
+        if claim in self._issued:
             return "coupon_already_issued"
         return None
 
-    def record_issued(self, user_id: str, product_id: str) -> None:
-        key = (user_id, product_id)
-        self._issued[key] = None
-        self._issued.move_to_end(key)
+    def record_issued(
+        self, request: RankingRequest, candidate: HistoricalCandidate
+    ) -> None:
+        claim = CouponClaim(request.user_id, request.session_id, candidate.product_id)
+        self._issued[claim] = None
+        self._issued.move_to_end(claim)
         while len(self._issued) > self.max_issued:
             self._issued.popitem(last=False)
 
@@ -564,9 +568,7 @@ class AdaptiveRankingService:
             )
             for candidate, score, explanation in selected
         )
-        for candidate, _, _ in selected:
-            if candidate.offer_type == "coupon":
-                self.guardrails.record_issued(request.user_id, candidate.product_id)
+        self._record_issued_coupons(request, (candidate for candidate, _, _ in selected))
         return RankingDecision(
             impression_id=impression_id,
             snapshot_version=snapshot.version,
@@ -576,6 +578,15 @@ class AdaptiveRankingService:
             items=items,
             suppressions=suppressions,
         )
+
+    def _record_issued_coupons(
+        self,
+        request: RankingRequest,
+        candidates: Iterable[HistoricalCandidate],
+    ) -> None:
+        for candidate in candidates:
+            if candidate.offer_type == "coupon":
+                self.guardrails.record_issued(request, candidate)
 
     def rank_candidates(
         self,

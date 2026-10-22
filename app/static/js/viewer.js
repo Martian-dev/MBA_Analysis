@@ -2,6 +2,8 @@ const list = document.querySelector('#event-list');
 const connection = document.querySelector('#connection');
 const counts = {event_received: 0, coupon_issued: 0, coupon_suppressed: 0};
 let source;
+let couponRefresh;
+let couponListSignature = '';
 
 const text = value => String(value ?? '—');
 const time = value => value ? new Date(value).toISOString().slice(11, 19) : '—';
@@ -59,6 +61,43 @@ function appendEntry(entry, isNew=false) {
   while (list.children.length > 60) list.lastElementChild.remove();
   document.querySelector('#last-seen').textContent = time(entry.observed_at);
   showDecision(entry);
+  if (isNew && entry.kind === 'coupon_issued') loadAvailableCoupons();
+}
+
+function renderAvailableCoupons(coupons, total) {
+  const target = document.querySelector('#available-coupons');
+  document.querySelector('#available-coupon-count').textContent = total;
+  const signature = JSON.stringify(coupons.map(coupon => [
+    coupon.coupon_id, coupon.user_id, coupon.session_id, coupon.product_id,
+  ]));
+  if (signature === couponListSignature) return;
+  couponListSignature = signature;
+  target.innerHTML = '';
+  if (!coupons.length) {
+    target.innerHTML = '<li class="empty-state">No unredeemed coupons are available.</li>';
+    return;
+  }
+  coupons.forEach(coupon => {
+    const item = document.createElement('li');
+    item.className = 'coupon-row coupon-row--new';
+    item.innerHTML = '<div><strong class="coupon-product"></strong><span class="coupon-owner"></span></div><b class="coupon-value"></b>';
+    item.querySelector('.coupon-product').textContent = text(coupon.product_id);
+    item.querySelector('.coupon-owner').textContent = `Shopper · ${text(coupon.user_id)} · Session · ${text(coupon.session_id)}`;
+    item.querySelector('.coupon-value').textContent = `${text(coupon.discount_percent)}% off`;
+    target.append(item);
+  });
+}
+
+async function loadAvailableCoupons() {
+  const target = document.querySelector('#available-coupons');
+  try {
+    const response = await fetch('/api/coupons/available');
+    if (!response.ok) throw new Error('Coupon ledger unavailable');
+    const data = await response.json();
+    renderAvailableCoupons(data.coupons, data.total);
+  } catch (error) {
+    target.innerHTML = `<li class="empty-state">${error.message}</li>`;
+  }
 }
 
 async function start() {
@@ -70,6 +109,9 @@ async function start() {
     updateMetrics();
     data.events.forEach(entry => appendEntry(entry));
     connect(data.last_id);
+    loadAvailableCoupons();
+    clearInterval(couponRefresh);
+    couponRefresh = setInterval(loadAvailableCoupons, 5000);
   } catch (error) {
     setConnection('down', 'Pipeline offline');
     list.innerHTML = `<li class="empty-state">${error.message}. Run <code>bash scripts/run_live.sh</code>, then reload this page.</li>`;

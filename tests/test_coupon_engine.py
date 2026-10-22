@@ -83,7 +83,7 @@ def test_coupon_is_idempotent_for_user_and_product():
     assert second is None
 
 
-def test_coupon_guardrail_is_customer_scoped_across_sessions():
+def test_coupon_guardrail_resets_for_a_new_session():
     engine = CouponEngine(
         FakeRules({("avocado", "tortillas"): {"support": 0.02, "confidence": 0.3, "lift": 2.1}})
     )
@@ -96,7 +96,57 @@ def test_coupon_guardrail_is_customer_scoped_across_sessions():
         "session_id": "s2",
     })
     assert first is not None
-    assert second is None
+    assert second is not None
+    assert second["session_id"] == "s2"
+
+
+def test_coupon_guardrail_is_shared_across_engine_restarts_for_one_session():
+    class SharedClaims:
+        def __init__(self):
+            self.claimed = set()
+
+        def claim(self, coupon_claim):
+            if coupon_claim in self.claimed:
+                return False
+            self.claimed.add(coupon_claim)
+            return True
+
+        def release(self, coupon_claim):
+            self.claimed.discard(coupon_claim)
+
+    rules = FakeRules({
+        ("avocado", "tortillas"): {"support": 0.02, "confidence": 0.3, "lift": 2.1}
+    })
+    claims = SharedClaims()
+    first_engine = CouponEngine(rules, claims=claims)
+    second_engine = CouponEngine(rules, claims=claims)
+    first_engine.process(event("cart_item_added", "avocado"))
+    second_engine.process(event("cart_item_added", "avocado"))
+
+    assert first_engine.process(
+        event("product_view_ended", "tortillas", dwell_seconds=60)
+    ) is not None
+    duplicate, reason = second_engine.evaluate({
+        **event("product_view_ended", "tortillas", dwell_seconds=60),
+        "event_id": "after-restart",
+    })
+    assert duplicate is None
+    assert reason == "coupon_already_issued"
+
+
+def test_failed_coupon_delivery_can_release_its_claim_for_retry():
+    engine = CouponEngine(FakeRules({
+        ("avocado", "tortillas"): {"support": 0.02, "confidence": 0.3, "lift": 2.1}
+    }))
+    engine.process(event("cart_item_added", "avocado"))
+    view_event = event("product_view_ended", "tortillas", dwell_seconds=60)
+    first = engine.process(view_event)
+    engine.release_claim(first)
+
+    retry = engine.process(view_event)
+
+    assert retry is not None
+    assert retry["coupon_id"] == first["coupon_id"]
 
 
 def test_evaluate_exposes_suppression_reason():

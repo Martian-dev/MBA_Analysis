@@ -282,6 +282,12 @@ def test_coupon_is_frequency_capped_by_guardrail_not_bandit_score():
     assert second.items == ()
     assert second.suppressions == {"offer": "coupon_already_issued"}
 
+    next_session = service.rank(
+        RankingRequest("shopper-1", "session-2", cart_product_ids=("cart-item",)),
+        snapshot,
+    )
+    assert [item.product_id for item in next_session.items] == ["offer"]
+
 
 def test_live_cart_state_is_applied_to_guardrails_even_without_request_cart():
     service = AdaptiveRankingService()

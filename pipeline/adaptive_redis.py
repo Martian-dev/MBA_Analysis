@@ -402,9 +402,7 @@ class RedisAdaptiveRankingService(AdaptiveRankingService):
                 scored.append((candidate, self.historical_weight * candidate.prior_score))
         scored.sort(key=lambda item: (-item[1], item[0].product_id))
         selected = scored[: request.limit]
-        for candidate, _ in selected:
-            if candidate.offer_type == "coupon":
-                self.guardrails.record_issued(request.user_id, candidate.product_id)
+        self._record_issued_coupons(request, (candidate for candidate, _ in selected))
         self._decision_sequence += 1
         return RankingDecision(
             impression_id=f"historical-fallback-unavailable-{self._decision_sequence:08d}",
