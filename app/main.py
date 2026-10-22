@@ -45,6 +45,7 @@ rules_df = pd.DataFrame(columns=["antecedents", "consequents", "support", "confi
 rules_snapshot_version = "legacy-app-rules"
 item_to_rep_map: dict[str, str] = {}
 catalog_products: list[dict[str, Any]] = []
+analysis_product_ids: set[int] = set()
 products_by_id: dict[int, dict[str, Any]] = {}
 products_by_exact_name: dict[str, dict[str, Any]] = {}
 products_by_folded_name: dict[str, list[dict[str, Any]]] = {}
@@ -77,9 +78,37 @@ def _read_lookup(path: Path, id_field: str, name_field: str) -> dict[int, str]:
         return {int(row[id_field]): row[name_field] for row in csv.DictReader(handle)}
 
 
+def _analysis_product_ids(
+    rules: pd.DataFrame,
+    products: list[dict[str, Any]],
+) -> set[int]:
+    """Return catalog IDs referenced by the active association-rule snapshot."""
+    if {"antecedent_product_id", "consequent_product_id"} <= set(rules.columns):
+        values = pd.concat(
+            [rules["antecedent_product_id"], rules["consequent_product_id"]],
+            ignore_index=True,
+        )
+        return {
+            int(value)
+            for value in pd.to_numeric(values, errors="coerce").dropna()
+            if int(value) > 0
+        }
+
+    if {"antecedents", "consequents"} <= set(rules.columns):
+        names = {
+            str(value).strip()
+            for column in ("antecedents", "consequents")
+            for value in rules[column].dropna()
+            if str(value).strip()
+        }
+        return {product["product_id"] for product in products if product["product_name"] in names}
+    return set()
+
+
 def load_data() -> None:
-    """Load the full Instacart catalog and temporary rule artifact once."""
-    global rules_df, rules_snapshot_version, item_to_rep_map, catalog_products, products_by_id
+    """Load the active rule snapshot and its referenced Instacart products."""
+    global rules_df, rules_snapshot_version, item_to_rep_map, catalog_products, analysis_product_ids
+    global products_by_id
     global products_by_exact_name, products_by_folded_name
     global departments, aisles
 
@@ -107,8 +136,6 @@ def load_data() -> None:
         department_names = _read_lookup(DATA_DIR / "departments.csv", "department_id", "department")
         aisle_names = _read_lookup(DATA_DIR / "aisles.csv", "aisle_id", "aisle")
         loaded: list[dict[str, Any]] = []
-        department_counts: dict[int, int] = {}
-        aisle_counts: dict[int, int] = {}
         with (DATA_DIR / "products.csv").open(newline="", encoding="utf-8") as handle:
             for row in csv.DictReader(handle):
                 product_id = int(row["product_id"])
@@ -125,28 +152,39 @@ def load_data() -> None:
                     "price_is_illustrative": True,
                 }
                 loaded.append(product)
-                department_counts[department_id] = department_counts.get(department_id, 0) + 1
-                aisle_counts[aisle_id] = aisle_counts.get(aisle_id, 0) + 1
 
-        catalog_products = loaded
-        products_by_id = {product["product_id"]: product for product in loaded}
+        analysis_product_ids = _analysis_product_ids(rules_df, loaded)
+        catalog_products = [product for product in loaded if product["product_id"] in analysis_product_ids]
+        products_by_id = {product["product_id"]: product for product in catalog_products}
         products_by_exact_name = {}
         products_by_folded_name = {}
-        for product in loaded:
+        department_counts: dict[int, int] = {}
+        aisle_counts: dict[int, int] = {}
+        for product in catalog_products:
             products_by_exact_name[product["product_name"]] = product
             products_by_folded_name.setdefault(product["product_name"].casefold(), []).append(product)
+            department_id = product["department_id"]
+            aisle_id = product["aisle_id"]
+            department_counts[department_id] = department_counts.get(department_id, 0) + 1
+            aisle_counts[aisle_id] = aisle_counts.get(aisle_id, 0) + 1
         departments = [
             {"department_id": key, "department": value, "product_count": department_counts.get(key, 0)}
             for key, value in sorted(department_names.items(), key=lambda item: item[1])
+            if department_counts.get(key, 0)
         ]
         aisles = [
             {"aisle_id": key, "aisle": value, "product_count": aisle_counts.get(key, 0)}
             for key, value in sorted(aisle_names.items(), key=lambda item: item[1])
+            if aisle_counts.get(key, 0)
         ]
-        print(f"Loaded {len(catalog_products):,} products and {len(rules_df):,} association rules.")
+        print(
+            f"Loaded {len(catalog_products):,} rule-covered products and "
+            f"{len(rules_df):,} association rules."
+        )
     except OSError as exc:  # pragma: no cover - startup fallback
         print(f"Could not load Instacart catalog from {DATA_DIR}: {exc}")
         catalog_products = []
+        analysis_product_ids = set()
         products_by_id = {}
         products_by_exact_name = {}
         products_by_folded_name = {}
@@ -296,7 +334,11 @@ def _query_cart_products() -> list[dict[str, Any]]:
 
 @app.get("/")
 def home():
-    return render_template("index.html")
+    return render_template(
+        "index.html",
+        catalog_count=f"{len(catalog_products):,}",
+        snapshot_version=rules_snapshot_version,
+    )
 
 
 @app.get("/product/<int:product_id>")

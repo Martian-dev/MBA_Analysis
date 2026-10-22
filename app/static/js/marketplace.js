@@ -1,8 +1,8 @@
 (() => {
     'use strict';
 
-    const CART_KEY = 'basket-signal-cart-v2';
-    const COUPON_KEY = 'basket-signal-coupons-v2';
+    const CART_KEY = 'basket-signal-cart-v3';
+    const COUPON_KEY = 'basket-signal-coupons-v3';
     const USER_KEY = 'basket-signal-user';
     const SESSION_KEY = 'basket-signal-session';
     const listeners = new Set();

@@ -15,7 +15,7 @@ Open both pages:
 
 ## Presentation flow
 
-1. Search the full catalog, open a product, and point out its real Instacart
+1. Search the rule-covered catalog, open a product, and point out its real Instacart
    aisle/department metadata and explicitly illustrative INR price.
 2. Add the product to the persistent basket and open the basket drawer. Its
    pairings begin with the configured historical snapshot; later clicks and

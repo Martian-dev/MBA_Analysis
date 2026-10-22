@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Browse the complete Instacart product catalog in a live, adaptive grocery marketplace demonstration.">
+    <meta name="description" content="Browse the products covered by the active market-basket analysis snapshot and generate live shopping signals.">
     <title>Basket Signal · Neighbourhood grocery market</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
@@ -12,9 +12,9 @@
     <main id="main-content">
         <section class="market-hero">
             <div class="market-hero__copy">
-                <p class="overline">Fresh picks · live pairings · one thoughtful basket</p>
-                <h1>The whole market,<br><em>picked your way.</em></h1>
-                <p>Search every product in the Instacart catalog. As your basket takes shape, Basket Signal learns from this visit and suggests useful pairings—not generic promotions.</p>
+                <p class="overline">Rule-backed catalog · live shopping signals</p>
+                <h1>Shop the products<br><em>being analyzed.</em></h1>
+                <p>Every product shown here belongs to the active association-rule snapshot. Cart changes and product views feed the live decision engine.</p>
                 <a class="button button--primary" href="#market-catalog">Shop the aisles<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a>
             </div>
             <div class="market-hero__visual" aria-label="Illustration of a market basket with fresh groceries">
@@ -22,11 +22,11 @@
                 <span class="produce produce--citrus"><svg viewBox="0 0 100 100" aria-hidden="true"><circle cx="50" cy="53" r="37"/><path d="M48 16c5-11 15-15 28-12-3 12-12 18-28 12Z"/></svg></span>
                 <span class="produce produce--bottle"><svg viewBox="0 0 100 130" aria-hidden="true"><path d="M35 10h30v24l10 17v65H25V51l10-17z"/><path d="M35 26h30M26 61h48"/></svg></span>
                 <div class="hero-basket"><svg viewBox="0 0 300 200" aria-hidden="true"><path d="M33 55h234l-26 124H59z"/><path d="M86 62C93 22 114 5 150 5s57 17 64 57"/><path d="M61 93h178M55 125h190M93 58 79 177M150 58v120M207 58l14 119"/></svg></div>
-                <div class="market-ticket"><small>Today’s basket</small><strong>Fresh, practical,<br>uniquely yours.</strong><span>49,688 products inside</span></div>
+                <div class="market-ticket"><small>Active snapshot</small><strong>{{ catalog_count }} analyzed<br>products.</strong><span>{{ snapshot_version }}</span></div>
             </div>
         </section>
         <section class="market-promise" aria-label="Market service information">
-            <div><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M3 12h18"/></svg><span><strong>49,688 grocery products</strong> from the complete local catalog</span></div>
+            <div><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M3 12h18"/></svg><span><strong>{{ catalog_count }} rule-covered products</strong> from the active analysis snapshot</span></div>
             <div><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13c3-7 9-10 16-9-1 8-6 14-16 16 0-3 0-5 0-7Z"/><path d="M5 18c4-5 8-8 13-11"/></svg><span><strong>Live basket pairings</strong> shaped by this shopping session</span></div>
             <div><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16v12H4zM8 7V5h8v2M8 12h8"/></svg><span><strong>Simulated checkout</strong> with no real payment processed</span></div>
         </section>
@@ -36,7 +36,7 @@
                 <p class="catalog__count" data-catalog-count>Opening the market…</p>
             </div>
             <div class="catalog__tools">
-                <label class="catalog-search" for="catalog-search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m16 16 5 5"/></svg><span class="sr-only">Search products</span><input id="catalog-search" type="search" placeholder="Try “oat milk” or “avocado”" autocomplete="off"><kbd>/</kbd></label>
+                <label class="catalog-search" for="catalog-search"><svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="m16 16 5 5"/></svg><span class="sr-only">Search products</span><input id="catalog-search" type="search" placeholder="Try “banana” or “avocado”" autocomplete="off"><kbd>/</kbd></label>
                 <label class="select-field"><span>Department</span><select data-department-filter><option value="">All departments</option></select></label>
                 <label class="select-field"><span>Aisle</span><select data-aisle-filter><option value="">All aisles</option></select></label>
             </div>

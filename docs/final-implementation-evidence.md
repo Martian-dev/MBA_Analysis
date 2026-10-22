@@ -6,7 +6,8 @@ This document records what was executed for the final deliverables on
 
 ## Marketplace
 
-The Flask marketplace now exposes all 49,688 local catalog products with
+The Flask marketplace reads all 49,688 local catalog records but exposes only
+the products referenced by the active association-rule snapshot, with
 search, department and aisle filters, pagination, product detail pages, a
 persistent browser basket, quantity controls, live coupon handling, simulated
 checkout, and owner-scoped order lookup. Catalog metadata comes from the local

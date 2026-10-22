@@ -22,9 +22,10 @@ results are recorded in
 
 ## Browse the grocery marketplace
 
-The storefront at <http://127.0.0.1:5000/> reads the complete local
-`InstacartMBA/products.csv` catalog (49,688 products) and joins aisle and
-department metadata at startup. It supports server-side search, filters, and
+The storefront at <http://127.0.0.1:5000/> reads the local Instacart catalog
+metadata but exposes only products referenced by the active `RULES_PATH`
+association-rule snapshot. This keeps every listed product inside the analysis
+pipeline's current scope. It supports server-side search, filters, and
 pagination; deep-linked product pages at `/product/<product_id>`; a persistent
 browser basket; live coupon application; and a simulated checkout at
 `/checkout`. Confirmed demo orders are appended locally to

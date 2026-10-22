@@ -26,15 +26,19 @@ def client(tmp_path):
         yield test_client
 
 
-def test_full_catalog_is_paginated_and_carries_instacart_metadata(client):
-    response = client.get("/api/products?per_page=12&page=2")
+def test_catalog_only_lists_products_covered_by_the_active_rule_snapshot(client):
+    response = client.get("/api/products?per_page=60")
     assert response.status_code == 200
     payload = response.get_json()
 
-    assert payload["total"] == 49_688
-    assert payload["pagination"]["page"] == 2
-    assert payload["pagination"]["pages"] == 4_141
-    assert len(payload["products"]) == 12
+    assert payload["total"] == 57
+    assert payload["pagination"]["page"] == 1
+    assert payload["pagination"]["pages"] == 1
+    assert len(payload["products"]) == 57
+    assert "Banana" in {product["product_name"] for product in payload["products"]}
+    assert "Smart Ones Classic Favorites Mini Rigatoni With Vodka Cream Sauce" not in {
+        product["product_name"] for product in payload["products"]
+    }
     product = payload["products"][0]
     assert {"product_id", "product_name", "aisle", "department", "price_inr"} <= product.keys()
     assert product["price_is_illustrative"] is True
@@ -62,6 +66,8 @@ def test_deep_linked_product_page_and_detail_api_include_related_products(client
     assert payload["product"]["product_name"] == "Banana"
     assert payload["related_products"]
     assert all(item["product_id"] != 24852 for item in payload["related_products"])
+    assert client.get("/product/4").status_code == 404
+    assert client.get("/api/products/4").status_code == 404
     assert client.get("/api/products/999999").status_code == 404
 
 
@@ -101,6 +107,33 @@ with app.test_client() as client:
 
     assert payload["recommendation"]["snapshot_version"] == "fixture-spark-v1"
     assert payload["recommendations"][0]["product_name"] == "Banana"
+
+
+def test_spark_rule_snapshot_defines_the_public_marketplace_catalog():
+    rules_path = Path(__file__).parent / "fixtures" / "spark-rules-serving.csv"
+    code = """
+import json
+from app.main import app
+with app.test_client() as client:
+    catalog = client.get('/api/products?per_page=60').get_json()
+    excluded_page_status = client.get('/product/4').status_code
+    print(json.dumps({'catalog': catalog, 'excluded_page_status': excluded_page_status}))
+"""
+    environment = {**os.environ, "RULES_PATH": str(rules_path)}
+    completed = subprocess.run(
+        [sys.executable, "-c", code],
+        cwd=Path(__file__).parents[1],
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+    )
+    payload = json.loads(completed.stdout.splitlines()[-1])
+
+    assert payload["catalog"]["total"] == 2
+    assert {product["product_id"] for product in payload["catalog"]["products"]} == {45, 24852}
+    assert payload["excluded_page_status"] == 404
 
 
 def test_cart_recommendation_accepts_catalog_ids_and_excludes_cart(client):
@@ -243,7 +276,7 @@ def test_checkout_persists_a_demo_order_and_owner_can_look_it_up(client, monkeyp
             assert kwargs == {
                 "user_id": "shopper-test", "session_id": "session-test",
                 "order_id": "BS-test-order-001",
-                "allowed_product_ids": {"24852", "1", "Banana", "Chocolate Sandwich Cookies"},
+                "allowed_product_ids": {"24852", "47766", "Banana", "Organic Avocado"},
             }
             return [{
                 "coupon_id": "coupon-test", "product_id": "Banana",
@@ -260,7 +293,7 @@ def test_checkout_persists_a_demo_order_and_owner_can_look_it_up(client, monkeyp
         "address": "12 Market Road",
         "city": "Bengaluru",
         "postal_code": "560001",
-        "cart": [{"product_id": 24852, "quantity": 2}, {"product_id": 1, "quantity": 1}],
+        "cart": [{"product_id": 24852, "quantity": 2}, {"product_id": 47766, "quantity": 1}],
         "coupons": [{"coupon_id": "coupon-test", "product_id": 24852, "discount_percent": 5}],
     }
     response = client.post("/api/checkout", json=checkout)
@@ -296,14 +329,14 @@ def test_checkout_ignores_unissued_client_discount(client, monkeypatch):
     assert response.get_json()["order"]["savings_inr"] == 0
 
 
-def test_exact_product_names_win_and_ambiguous_casefold_is_rejected_via_http(client):
-    lower = client.get("/api/recommend?item=Biotin%201000%20mcg")
-    title = client.get("/api/recommend?item=Biotin%201000%20Mcg")
-    ambiguous = client.get("/api/recommend?item=BIOTIN%201000%20MCG")
+def test_recommendation_lookup_only_resolves_rule_covered_products(client):
+    exact = client.get("/api/recommend?item=Banana")
+    casefolded = client.get("/api/recommend?item=banana")
+    outside_snapshot = client.get("/api/recommend?item=Biotin%201000%20mcg")
 
-    assert lower.get_json()["product"]["product_id"] == 42
-    assert title.get_json()["product"]["product_id"] == 2059
-    assert ambiguous.status_code == 400
+    assert exact.get_json()["product"]["product_id"] == 24852
+    assert casefolded.get_json()["product"]["product_id"] == 24852
+    assert outside_snapshot.status_code == 400
 
 
 def test_closed_basket_drawer_is_inert_modal_markup(client):
