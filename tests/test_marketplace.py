@@ -6,6 +6,7 @@ import json
 import os
 from datetime import datetime, timezone
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -343,6 +344,7 @@ def test_closed_basket_drawer_is_inert_modal_markup(client):
     page = client.get("/")
 
     assert page.status_code == 200
+    assert re.search(rb'data-catalog-scope="[0-9a-f]{16}"', page.data)
     assert b'role="dialog"' in page.data
     assert b'aria-modal="true"' in page.data
     assert b'aria-hidden="true" inert' in page.data

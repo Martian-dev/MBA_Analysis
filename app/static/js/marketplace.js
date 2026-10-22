@@ -1,8 +1,11 @@
 (() => {
     'use strict';
 
-    const CART_KEY = 'basket-signal-cart-v3';
-    const COUPON_KEY = 'basket-signal-coupons-v3';
+    const catalogScope = document.querySelector('[data-catalog-scope]')?.dataset.catalogScope || 'unscoped';
+    const CART_PREFIX = 'basket-signal-cart-';
+    const COUPON_PREFIX = 'basket-signal-coupons-';
+    const CART_KEY = `${CART_PREFIX}${catalogScope}`;
+    const COUPON_KEY = `${COUPON_PREFIX}${catalogScope}`;
     const USER_KEY = 'basket-signal-user';
     const SESSION_KEY = 'basket-signal-session';
     const listeners = new Set();
@@ -13,6 +16,17 @@
     const safeParse = (value, fallback) => {
         try { return JSON.parse(value) ?? fallback; } catch (_) { return fallback; }
     };
+    const removeStaleCatalogState = () => {
+        try {
+            for (let index = localStorage.length - 1; index >= 0; index -= 1) {
+                const key = localStorage.key(index);
+                if ((key?.startsWith(CART_PREFIX) && key !== CART_KEY) || (key?.startsWith(COUPON_PREFIX) && key !== COUPON_KEY)) {
+                    localStorage.removeItem(key);
+                }
+            }
+        } catch (_) { /* Storage can be unavailable in privacy-restricted browsers. */ }
+    };
+    removeStaleCatalogState();
     const randomId = prefix => `${prefix}-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`}`;
     const storageValue = (storage, key, prefix) => {
         try {

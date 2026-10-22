@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import hashlib
 import json
 import os
 import re
@@ -41,11 +42,14 @@ DATA_DIR = Path(os.getenv("INSTACART_DATA_DIR", PROJECT_DIR / "InstacartMBA"))
 DEFAULT_ORDER_STORE = PROJECT_DIR / ".runtime" / "marketplace" / "orders.jsonl"
 app.config.setdefault("ORDER_STORE_PATH", str(DEFAULT_ORDER_STORE))
 
+RULE_ID_COLUMNS = ("antecedent_product_id", "consequent_product_id")
+RULE_NAME_COLUMNS = ("antecedents", "consequents")
+
 rules_df = pd.DataFrame(columns=["antecedents", "consequents", "support", "confidence", "lift"])
 rules_snapshot_version = "legacy-app-rules"
 item_to_rep_map: dict[str, str] = {}
 catalog_products: list[dict[str, Any]] = []
-analysis_product_ids: set[int] = set()
+catalog_scope_token = "0" * 16
 products_by_id: dict[int, dict[str, Any]] = {}
 products_by_exact_name: dict[str, dict[str, Any]] = {}
 products_by_folded_name: dict[str, list[dict[str, Any]]] = {}
@@ -78,14 +82,18 @@ def _read_lookup(path: Path, id_field: str, name_field: str) -> dict[int, str]:
         return {int(row[id_field]): row[name_field] for row in csv.DictReader(handle)}
 
 
+def _rules_use_catalog_ids(rules: pd.DataFrame) -> bool:
+    return set(RULE_ID_COLUMNS) <= set(rules.columns)
+
+
 def _analysis_product_ids(
     rules: pd.DataFrame,
     products: list[dict[str, Any]],
 ) -> set[int]:
     """Return catalog IDs referenced by the active association-rule snapshot."""
-    if {"antecedent_product_id", "consequent_product_id"} <= set(rules.columns):
+    if _rules_use_catalog_ids(rules):
         values = pd.concat(
-            [rules["antecedent_product_id"], rules["consequent_product_id"]],
+            [rules[column] for column in RULE_ID_COLUMNS],
             ignore_index=True,
         )
         return {
@@ -94,10 +102,10 @@ def _analysis_product_ids(
             if int(value) > 0
         }
 
-    if {"antecedents", "consequents"} <= set(rules.columns):
+    if set(RULE_NAME_COLUMNS) <= set(rules.columns):
         names = {
             str(value).strip()
-            for column in ("antecedents", "consequents")
+            for column in RULE_NAME_COLUMNS
             for value in rules[column].dropna()
             if str(value).strip()
         }
@@ -107,7 +115,7 @@ def _analysis_product_ids(
 
 def load_data() -> None:
     """Load the active rule snapshot and its referenced Instacart products."""
-    global rules_df, rules_snapshot_version, item_to_rep_map, catalog_products, analysis_product_ids
+    global rules_df, rules_snapshot_version, item_to_rep_map, catalog_products, catalog_scope_token
     global products_by_id
     global products_by_exact_name, products_by_folded_name
     global departments, aisles
@@ -153,8 +161,11 @@ def load_data() -> None:
                 }
                 loaded.append(product)
 
-        analysis_product_ids = _analysis_product_ids(rules_df, loaded)
-        catalog_products = [product for product in loaded if product["product_id"] in analysis_product_ids]
+        active_product_ids = _analysis_product_ids(rules_df, loaded)
+        catalog_scope_token = hashlib.sha256(
+            ",".join(str(product_id) for product_id in sorted(active_product_ids)).encode("utf-8")
+        ).hexdigest()[:16]
+        catalog_products = [product for product in loaded if product["product_id"] in active_product_ids]
         products_by_id = {product["product_id"]: product for product in catalog_products}
         products_by_exact_name = {}
         products_by_folded_name = {}
@@ -184,7 +195,7 @@ def load_data() -> None:
     except OSError as exc:  # pragma: no cover - startup fallback
         print(f"Could not load Instacart catalog from {DATA_DIR}: {exc}")
         catalog_products = []
-        analysis_product_ids = set()
+        catalog_scope_token = "0" * 16
         products_by_id = {}
         products_by_exact_name = {}
         products_by_folded_name = {}
@@ -193,6 +204,11 @@ def load_data() -> None:
 
 
 load_data()
+
+
+@app.context_processor
+def inject_catalog_scope() -> dict[str, str]:
+    return {"catalog_scope_token": catalog_scope_token}
 
 
 def activity_log() -> ActivityLog:
@@ -237,7 +253,7 @@ def _related_products(product: dict[str, Any], limit: int = 6) -> list[dict[str,
     name = product["product_name"]
     # Spark artifacts use catalog IDs; the semantic representative mapping
     # applies only to the legacy name-based fallback.
-    has_catalog_ids = {"antecedent_product_id", "consequent_product_id"} <= set(rules_df.columns)
+    has_catalog_ids = _rules_use_catalog_ids(rules_df)
     if has_catalog_ids:
         matches = rules_df[
             pd.to_numeric(rules_df["antecedent_product_id"], errors="coerce").eq(product["product_id"])

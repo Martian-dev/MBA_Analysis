@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="description" content="Browse the products covered by the active market-basket analysis snapshot and generate live shopping signals.">
+    <meta name="description" content="Browse the products covered by the active rule snapshot and generate live shopping signals.">
     <title>Basket Signal · Neighbourhood grocery market</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
 </head>
@@ -26,7 +26,7 @@
             </div>
         </section>
         <section class="market-promise" aria-label="Market service information">
-            <div><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M3 12h18"/></svg><span><strong>{{ catalog_count }} rule-covered products</strong> from the active analysis snapshot</span></div>
+            <div><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v18M3 12h18"/></svg><span><strong>{{ catalog_count }} rule-covered products</strong> from the active rule snapshot</span></div>
             <div><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 13c3-7 9-10 16-9-1 8-6 14-16 16 0-3 0-5 0-7Z"/><path d="M5 18c4-5 8-8 13-11"/></svg><span><strong>Live basket pairings</strong> shaped by this shopping session</span></div>
             <div><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 7h16v12H4zM8 7V5h8v2M8 12h8"/></svg><span><strong>Simulated checkout</strong> with no real payment processed</span></div>
         </section>
