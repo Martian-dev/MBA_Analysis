@@ -293,13 +293,24 @@
         if (event.target.closest('[data-open-cart]')) { openCart(); return; }
         if (event.target.closest('[data-close-cart], [data-cart-scrim]')) { closeCart(); return; }
         const productLink = event.target.closest('[data-product-link]');
-        if (productLink && productLink.dataset.source !== 'catalog') publish('recommendation_clicked', {
+        if (!productLink || productLink.dataset.source === 'catalog' || event.defaultPrevented) return;
+        const sameTab = event.button === 0 && !event.metaKey && !event.ctrlKey && !event.shiftKey && !event.altKey
+            && (!productLink.target || productLink.target === '_self');
+        if (sameTab) event.preventDefault();
+        const delivery = publish('recommendation_clicked', {
             product_id: productLink.dataset.productName, catalog_product_id: Number(productLink.dataset.productId),
             product_name: productLink.dataset.productName, impression_id: productLink.dataset.impressionId || undefined,
             policy_version: productLink.dataset.policyVersion || undefined,
             snapshot_version: productLink.dataset.snapshotVersion || undefined,
             placement: productLink.dataset.source,
         }, true).catch(() => {});
+        if (sameTab) {
+            // Keep the cart and click in order before leaving this document.
+            // An offline event pipeline must not prevent product browsing.
+            let navigationTimer;
+            Promise.race([delivery, new Promise(resolve => { navigationTimer = setTimeout(resolve, 2500); })])
+                .then(() => { clearTimeout(navigationTimer); window.location.assign(productLink.href); });
+        }
     });
     document.addEventListener('keydown', event => {
         const drawer = document.querySelector('#cart-drawer');

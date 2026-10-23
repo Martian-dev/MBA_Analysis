@@ -78,9 +78,10 @@ def test_deep_linked_product_page_and_detail_api_include_related_products(client
 
 
 @pytest.mark.skipif(shutil.which("node") is None, reason="Node.js is required for the browserless UI regression test")
-def test_product_page_renders_a_distinct_basket_supported_recommendation():
+@pytest.mark.parametrize('script', ['product_page_recommendation.mjs', 'coupon_triggers.mjs'])
+def test_storefront_recommendations_and_coupon_trigger_interactions(script):
     completed = subprocess.run(
-        ["node", "tests/frontend/product_page_recommendation.mjs"],
+        ["node", f"tests/frontend/{script}"],
         cwd=Path(__file__).parents[1],
         capture_output=True,
         text=True,
