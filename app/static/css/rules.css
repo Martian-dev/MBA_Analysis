@@ -4,7 +4,7 @@
 .rules-intro > p:not(.overline) { color: var(--muted); font-size: 18px; }
 .rules-intro > a { display: inline-flex; align-items: center; min-height: 44px; color: var(--leaf); font-weight: 800; }
 .rules-how { margin-bottom: 48px; border-left: 4px solid var(--leaf); padding: 20px 24px; background: var(--leaf-soft); }
-.rules-how strong { font: 600 20px var(--display); }.rules-how p { max-width: 95ch; margin: 8px 0 0; }
+.rules-how summary { min-height: 44px; cursor: pointer; font: 600 20px/1.5 var(--display); }.rules-how p { max-width: 95ch; margin: 8px 0 0; }
 .rules-heading { display: flex; justify-content: space-between; align-items: end; gap: 24px; margin-bottom: 20px; }
 .rules-heading h2 { margin: 0; font: 600 clamp(25px, 3vw, 36px)/1.2 var(--display); letter-spacing: -.035em; }
 .rules-heading > p, .rules-thresholds { color: var(--leaf-dark); font-size: 14px; }

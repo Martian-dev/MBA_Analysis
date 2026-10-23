@@ -57,6 +57,10 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!response.ok || data.status !== 'live') throw new Error(data.message || 'Live ranking is unavailable.');
             liveSummary.textContent = `${data.products.length} products with retained signals · ${data.feedback_updates.toLocaleString()} learned feedback updates · checked ${new Date(data.as_of).toLocaleTimeString()}. Refreshes every 10 seconds.`;
             const signature = JSON.stringify(data.products);
+            if (signature !== liveSignature && liveResults.contains(document.activeElement)) {
+                liveSummary.textContent += ' Display refresh paused while a product link is focused.';
+                return;
+            }
             if (signature !== liveSignature) {
                 liveSignature = signature;
                 liveResults.innerHTML = data.products.length ? data.products.map(item => `<article class="live-signal"><a href="/product/${item.product_id}">${escape(item.product_name)}</a><span>${item.impressions}<small>Impressions · catalog ID</small></span><span>${Number(item.positive_weight).toFixed(2)}<small>Positive weight · catalog ID</small></span><span>${Number(item.legacy_positive_weight).toFixed(2)}<small>Legacy name-keyed weight</small></span></article>`).join('') : '<p>No retained signals yet. Browse products or leave the simulator running, then refresh.</p>';
@@ -64,7 +68,8 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (error) {
             if (closed) return;
             liveSummary.textContent = `${error.message} Historical rules are still available.`;
-            liveSignature = ''; liveResults.innerHTML = '';
+            liveSignature = '';
+            if (!liveResults.contains(document.activeElement)) liveResults.innerHTML = '';
         } finally { livePending = false; liveButton.disabled = false; }
     }
 
@@ -72,6 +77,7 @@ document.addEventListener('DOMContentLoaded', () => {
     previous.addEventListener('click', () => { page -= 1; loadRules(); });
     next.addEventListener('click', () => { page += 1; loadRules(); });
     liveButton.addEventListener('click', loadLive);
+    liveResults.addEventListener('focusout', () => { setTimeout(loadLive, 0); });
     document.addEventListener('visibilitychange', () => { if (document.visibilityState !== 'hidden') loadLive(); });
     const timer = setInterval(loadLive, 10_000);
     addEventListener('pagehide', () => { closed = true; requestId += 1; clearInterval(timer); }, {once: true});
