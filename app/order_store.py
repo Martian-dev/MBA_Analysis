@@ -19,6 +19,7 @@ class OrderStore:
             connection.execute('PRAGMA synchronous=FULL')
             connection.execute('CREATE TABLE IF NOT EXISTS orders (order_id TEXT PRIMARY KEY, payload TEXT NOT NULL, fingerprint TEXT)')
             connection.execute('CREATE TABLE IF NOT EXISTS migrations (name TEXT PRIMARY KEY)')
+            connection.execute('CREATE TABLE IF NOT EXISTS order_events (event_id TEXT PRIMARY KEY, payload TEXT NOT NULL, delivered INTEGER NOT NULL DEFAULT 0)')
             connection.execute('BEGIN IMMEDIATE')
             if self.legacy != self.path and self.legacy.is_file() and not connection.execute(
                 "SELECT 1 FROM migrations WHERE name='jsonl'").fetchone():
@@ -39,3 +40,24 @@ class OrderStore:
     def records(self):
         with self.transaction() as connection:
             return [json.loads(row[0]) for row in connection.execute('SELECT payload FROM orders ORDER BY rowid')]
+
+    @staticmethod
+    def enqueue_completion(connection, order):
+        event = {'event_id': 'checkout-completed:' + order['order_id'], 'event_type': 'checkout_completed',
+            'event_time': order['created_at'], 'user_id': order['user_id'], 'session_id': order['session_id'],
+            'order_id': order['order_id'], 'traffic_source': 'storefront',
+            'product_ids': [item['product_name'] for item in order['items']],
+            'catalog_product_ids': [item['product_id'] for item in order['items']]}
+        connection.execute('INSERT OR IGNORE INTO order_events (event_id, payload) VALUES (?, ?)',
+            (event['event_id'], json.dumps(event)))
+
+    def drain_events(self, publish, limit=100):
+        with self.transaction() as connection:
+            rows = list(connection.execute('SELECT event_id, payload FROM order_events WHERE delivered=0 ORDER BY rowid LIMIT ?', (limit,)))
+        delivered = 0
+        for event_id, payload in rows:
+            publish(json.loads(payload))
+            with self.transaction() as connection:
+                connection.execute('UPDATE order_events SET delivered=1 WHERE event_id=?', (event_id,))
+            delivered += 1
+        return delivered

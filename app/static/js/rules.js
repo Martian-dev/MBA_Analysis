@@ -67,8 +67,8 @@ document.addEventListener('DOMContentLoaded', () => {
             previous.disabled = page <= 1; next.disabled = page >= data.pagination.pages;
         } catch (_) {
             if (id !== requestId || closed) return;
-            summary.textContent = 'Rules could not be loaded.';
-            results.innerHTML = '<p>Check the server and select Find rules to retry.</p>';
+            summary.textContent = automatic ? 'Live refresh unavailable; showing the last loaded rules.' : 'Rules could not be loaded.';
+            if (!automatic) results.innerHTML = '<p>Check the server and select Find rules to retry.</p>';
         } finally { if (id === requestId) { rulesPending = false; results.setAttribute('aria-busy', 'false'); } }
     }
 

@@ -32,7 +32,7 @@ def test_owned_shopper_receives_and_redeems_live_coupon(tmp_path, trigger):
     before = set(client.scan_iter())
     events, coupons = 'audit-http-events-' + token, 'audit-http-coupons-' + token
     admin = KafkaAdminClient(bootstrap_servers=broker)
-    server = None; worker = None
+    server = None; worker = None; miner = None
     project = Path(__file__).parents[1]
     browser = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(http.cookiejar.CookieJar()))
     with socket.socket() as port_probe:
@@ -99,8 +99,27 @@ def test_owned_shopper_receives_and_redeems_live_coupon(tmp_path, trigger):
         assert status == 201 and confirmed['savings_inr'] > 0
         assert request('/api/checkout', order, csrf)[0] == 200
         assert json.loads(request('/api/coupons/available?user_id=' + user + '&session_id=s')[1])['coupons'] == []
+        # No browser completion event: the committed order itself owns delivery.
+        from app.order_store import OrderStore
+        from kafka import KafkaProducer
+        from pipeline.live_rules import live_snapshots
+        producer = KafkaProducer(bootstrap_servers=broker)
+        def publish_completion(event):
+            producer.send(events, key=user.encode(), value=json.dumps(event).encode()).get(timeout=10)
+        try:
+            assert OrderStore(tmp_path / 'orders.sqlite3').drain_events(publish_completion) == 1
+        finally:
+            producer.close()
+        miner = subprocess.Popen([sys.executable, '-m', 'pipeline.live_rule_worker', '--group-id',
+            'audit-order-miner-' + token, '--max-events', str(int(event_count) + 1)],
+            cwd=project, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        _, mining_errors = miner.communicate(timeout=30)
+        assert miner.returncode == 0, mining_errors.decode()
+        cohort = next(item for item in live_snapshots(client) if item['source'] == 'live_storefront')
+        assert cohort['independent_shoppers'] == 1
+        assert cohort['rules'] == [], 'A single confirmed order must not fabricate a rule'
     finally:
-        for process in (server, worker):
+        for process in (server, worker, miner):
             if process and process.poll() is None:
                 process.terminate(); process.wait(timeout=10)
         admin.delete_topics([events, coupons]); admin.close()

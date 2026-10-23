@@ -669,6 +669,7 @@ def publish_storefront_event():
         if order is None:
             return jsonify({'error': 'Checkout feedback requires a confirmed owned order'}), 400
         event['event_id'] = 'checkout-completed:' + order['order_id']
+        event['event_time'] = order['created_at']
         event['product_ids'] = [item['product_name'] for item in order['items']]
         event['catalog_product_ids'] = [item['product_id'] for item in order['items']]
     with _event_publish_lock:
@@ -900,7 +901,9 @@ def create_order():
         existing = connection.execute('SELECT payload, fingerprint FROM orders WHERE order_id=?', (data['order_id'],)).fetchone()
         if existing:
             if existing[1] == fingerprint:
-                return jsonify({'status': 'confirmed', 'order': json.loads(existing[0])}), 200
+                order = json.loads(existing[0])
+                OrderStore.enqueue_completion(connection, order)
+                return jsonify({'status': 'confirmed', 'order': order}), 200
             return jsonify({"error": "This order ID belongs to another submission"}), 409
         try:
             redeemed = coupon_ledger().redeem(
@@ -950,6 +953,7 @@ def create_order():
         }
         connection.execute('INSERT INTO orders VALUES (?, ?, ?)',
                            (order['order_id'], json.dumps(order, ensure_ascii=False), fingerprint))
+        OrderStore.enqueue_completion(connection, order)
     return jsonify({"status": "confirmed", "order": order}), 201
 
 
