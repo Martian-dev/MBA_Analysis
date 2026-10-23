@@ -13,7 +13,7 @@ import os
 import random
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -44,6 +44,7 @@ class SimulationCatalog:
     pairs: list[RulePair]
     qualifying_consequents: dict[str, set[str]]
     product_weights: list[float]
+    product_ids: dict[str, int] = field(default_factory=dict)
 
     @classmethod
     def from_csv(
@@ -55,11 +56,15 @@ class SimulationCatalog:
     ) -> "SimulationCatalog":
         strongest: dict[tuple[str, str], dict[str, float]] = {}
         products: set[str] = set()
+        product_ids = {}
         with Path(path).open(newline="", encoding="utf-8") as handle:
             for row in csv.DictReader(handle):
                 antecedent = row["antecedents"].strip()
                 consequent = row["consequents"].strip()
                 products.update((antecedent, consequent))
+                if row.get('antecedent_product_id') and row.get('consequent_product_id'):
+                    product_ids[antecedent] = int(row['antecedent_product_id'])
+                    product_ids[consequent] = int(row['consequent_product_id'])
                 metrics = {
                     "support": float(row["support"]),
                     "confidence": float(row["confidence"]),
@@ -93,6 +98,7 @@ class SimulationCatalog:
             pairs=pairs,
             qualifying_consequents=qualifying,
             product_weights=[weights[product] for product in ordered_products],
+            product_ids=product_ids,
         )
 
     def choose_pair(self, rng: random.Random) -> RulePair:
@@ -164,10 +170,16 @@ def publish_session(
     started["event_time"] = (datetime.now(timezone.utc) - timedelta(seconds=dwell)).isoformat()
     events.append(started)
     for payload in events:
+        payload['traffic_source'] = 'synthetic'
+        if payload['product_id'] in catalog.product_ids:
+            payload['catalog_product_id'] = catalog.product_ids[payload['product_id']]
         producer.send(EVENTS_TOPIC, key=user_id.encode(), value=payload).get(timeout=10)
 
     time.sleep(pause_seconds)
     ended = event("product_view_ended", viewed_product, user_id, session_id, dwell_seconds=dwell)
+    ended['traffic_source'] = 'synthetic'
+    if viewed_product in catalog.product_ids:
+        ended['catalog_product_id'] = catalog.product_ids[viewed_product]
     producer.send(EVENTS_TOPIC, key=user_id.encode(), value=ended).get(timeout=10)
     print(
         f"{session_id}: {plan['scenario']} | cart={','.join(plan['cart'])} | "
@@ -175,6 +187,27 @@ def publish_session(
         flush=True,
     )
     return str(plan["scenario"])
+
+
+def synthetic_purchase(catalog, index, rng, run_id):
+    """Independent latent shopping themes; no rule metrics are seeded.
+
+    Stable random themes generate demo completed baskets independently of the
+    mined association artifact. Singleton orders supply background denominators.
+    """
+    pool = sorted(catalog.products)
+    random.Random(731).shuffle(pool)
+    if len(pool) >= 8 and rng.random() < .7:
+        theme = rng.randrange(4)
+        products = pool[theme * 2:theme * 2 + 2]
+    else:
+        products = [rng.choice(pool)]
+    payload = event('checkout_completed', products[0], f'sim-buyer-{run_id}-{index}',
+        f'sim-purchase-{run_id}-{index}', order_id=f'sim-order-{run_id}-{index}',
+        product_ids=products, traffic_source='synthetic')
+    if all(product in catalog.product_ids for product in products):
+        payload['catalog_product_ids'] = [catalog.product_ids[product] for product in products]
+    return payload
 
 
 def main() -> None:
@@ -187,16 +220,26 @@ def main() -> None:
     parser.add_argument("--interval", type=float, default=2.0, help="seconds between sessions")
     parser.add_argument("--sessions", type=int, default=0, help="0 means run continuously")
     parser.add_argument("--seed", type=int, default=None, help="optional seed for reproducible replay")
+    parser.add_argument('--warmup-orders', type=int, default=0,
+        help='explicit synthetic completed baskets for live-miner warmup; never real orders')
     args = parser.parse_args()
     if args.interval < 1:
         parser.error("--interval must be at least 1 second")
     catalog = SimulationCatalog.from_csv(args.rules, args.min_lift, args.min_confidence, args.min_support)
     rng = random.Random(args.seed)
     producer = KafkaProducer(bootstrap_servers=args.bootstrap_servers, value_serializer=JsonSerializer())
+    run_id = uuid.uuid4().hex[:12]
     try:
+        if args.warmup_orders:
+            print(f'Publishing {args.warmup_orders} labeled synthetic completed baskets for mining warmup.', flush=True)
+        for index in range(max(0, args.warmup_orders)):
+            purchase = synthetic_purchase(catalog, index, rng, run_id)
+            producer.send(EVENTS_TOPIC, key=str(purchase['user_id']).encode(), value=purchase).get(timeout=10)
         index = 0
         while not args.sessions or index < args.sessions:
             publish_session(producer, catalog, index, rng)
+            purchase = synthetic_purchase(catalog, args.warmup_orders + index, rng, run_id)
+            producer.send(EVENTS_TOPIC, key=str(purchase['user_id']).encode(), value=purchase).get(timeout=10)
             index += 1
             if not args.sessions or index < args.sessions:
                 time.sleep(args.interval)

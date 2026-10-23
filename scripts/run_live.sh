@@ -13,13 +13,16 @@ simulator_pid=""
 flask_pid=""
 feedback_pid=""
 spark_pid=""
+miner_pid=""
+export LIVE_RULE_MINING_ENABLED="${LIVE_RULE_MINING_ENABLED:-1}"
+export LIVE_RULES_ALLOW_SYNTHETIC="${LIVE_RULES_ALLOW_SYNTHETIC:-1}"
 
 cleanup() {
   set +e
-  for pid in "$consumer_pid" "$simulator_pid" "$flask_pid" "$feedback_pid" "$spark_pid"; do
+  for pid in "$consumer_pid" "$simulator_pid" "$flask_pid" "$feedback_pid" "$spark_pid" "$miner_pid"; do
     [[ -n "$pid" ]] && kill "$pid" 2>/dev/null || true
   done
-  for pid in "$consumer_pid" "$simulator_pid" "$flask_pid" "$feedback_pid" "$spark_pid"; do
+  for pid in "$consumer_pid" "$simulator_pid" "$flask_pid" "$feedback_pid" "$spark_pid" "$miner_pid"; do
     [[ -n "$pid" ]] && wait "$pid" 2>/dev/null || true
   done
   if [[ "${KEEP_INFRA:-0}" != "1" ]]; then
@@ -74,6 +77,12 @@ echo "Starting adaptive feedback ingestion and outcome settlement..."
 uv run python -m pipeline.feedback_worker >"$runtime_dir/feedback.log" 2>&1 &
 feedback_pid=$!
 
+if [[ "$LIVE_RULE_MINING_ENABLED" == "1" ]]; then
+  echo "Starting validated live association mining (storefront and synthetic cohorts stay separate)..."
+  uv run python -m pipeline.live_rule_worker >"$runtime_dir/rule-miner.log" 2>&1 &
+  miner_pid=$!
+fi
+
 if [[ "${RUN_STRUCTURED_STREAMING:-0}" == "1" ]]; then
   bash scripts/run_adaptive_stream.sh >"$runtime_dir/spark-stream.log" 2>&1 &
   spark_pid=$!
@@ -81,6 +90,7 @@ fi
 
 echo "Starting the continuous clickstream simulator..."
 uv run python -m pipeline.live_simulator --interval "${SIMULATOR_INTERVAL:-2}" \
+  --warmup-orders "${SIMULATOR_WARMUP_ORDERS:-300}" \
   > >(tee "$runtime_dir/simulator.log") 2>&1 &
 simulator_pid=$!
 
@@ -110,6 +120,10 @@ echo "Randomized clickstream is live; decisions appear in the signal room. Press
 echo
 
 while true; do
+  if [[ -n "$miner_pid" ]] && ! kill -0 "$miner_pid" 2>/dev/null; then
+    echo "Live rule mining stopped. Check $runtime_dir/rule-miner.log" >&2
+    exit 1
+  fi
   if [[ -n "$spark_pid" ]] && ! kill -0 "$spark_pid" 2>/dev/null; then
     echo "Structured Streaming stopped. Check $runtime_dir/spark-stream.log" >&2
     exit 1

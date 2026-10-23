@@ -107,7 +107,9 @@ document.addEventListener('DOMContentLoaded', async () => {
             const recommendation = (data.recommendations || []).find(item => !cartIds.has(Number(item.product_id)));
             if (!recommendation) return;
 
-            const sourceLabel = recommendation.recommendation_source === 'historical_rule' ? 'Historical association rule' : 'Catalog fallback';
+            const sourceLabel = recommendation.recommendation_source === 'live_rule'
+                ? (recommendation.rule_source === 'live_synthetic' ? 'Synthetic transaction rule' : 'Live transaction rule')
+                : recommendation.recommendation_source === 'historical_rule' ? 'Historical association rule' : 'Catalog fallback';
             const rankingLabel = recommendation.policy_mode === 'adaptive_linucb' ? 'Live ranked' : 'Historical order';
             const lift = Number(recommendation.lift);
             const liftLabel = Number.isFinite(lift) ? `<span>${Market.escapeHtml(lift.toFixed(2))}× lift</span>` : '';

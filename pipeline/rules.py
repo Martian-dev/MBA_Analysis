@@ -79,5 +79,10 @@ class RedisRuleLookup:
         self.prefix = prefix
 
     def lookup(self, antecedent: str, consequent: str) -> dict[str, Any] | None:
+        if os.getenv('LIVE_RULE_MINING_ENABLED', '0') == '1':
+            from .live_rules import serving_live_rules
+            for rule in reversed(serving_live_rules(self.client)):
+                if rule['antecedents'] == antecedent and rule['consequents'] == consequent:
+                    return rule
         raw = self.client.hget(f"{self.prefix}{antecedent}", consequent)
         return json.loads(raw) if raw else None

@@ -231,6 +231,8 @@ class CouponEngine:
             "lift": lift,
             "confidence": float(metrics["confidence"]),
             "support": float(metrics["support"]),
+            "rule_source": metrics.get('source', 'historical_snapshot'),
+            "rule_version": metrics.get('run_id'),
             "reason": {
                 "trigger": event['event_type'],
                 **({'dwell_seconds': dwell, 'dwell_threshold_seconds': self.dwell_threshold_seconds}

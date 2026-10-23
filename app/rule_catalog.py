@@ -21,6 +21,9 @@ def describe_rules(
             'antecedent': {'product_id': left['product_id'], 'product_name': left['product_name']},
             'consequent': {'product_id': right['product_id'], 'product_name': right['product_name']},
             **metrics, 'coupon_eligible': not failed, 'failed_thresholds': failed,
-            'source': 'historical_snapshot',
+            'source': record.get('source', 'historical_snapshot'),
+            'version': record.get('run_id'), 'mined_at': record.get('mined_at'),
+            'discovery': record.get('discovery'), 'validation': record.get('validation'),
+            'adjusted_p_value': record.get('adjusted_p_value'),
         })
     return rows

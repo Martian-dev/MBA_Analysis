@@ -28,6 +28,7 @@ from pipeline.adaptive import create_adaptive_service
 from pipeline.adaptive_redis import create_redis_adaptive_service, RedisFeatureStore, RedisAdaptiveRankingService
 from pipeline.coupon_engine import configured_coupon_policy
 from app.rule_catalog import describe_rules
+from pipeline.live_rules import live_snapshots, serving_live_rules
 from pipeline.observability import ActivityLog, CouponLedger
 from pipeline.serialization import JsonSerializer
 from pipeline.topics import EVENTS_TOPIC
@@ -239,6 +240,45 @@ def coupon_ledger() -> CouponLedger:
     return CouponLedger(Redis.from_url(os.getenv("REDIS_URL", "redis://localhost:6379/0"), decode_responses=True))
 
 
+def rule_snapshot_client():
+    return Redis.from_url(os.getenv('REDIS_URL', 'redis://localhost:6379/0'),
+        decode_responses=True, socket_connect_timeout=.5, socket_timeout=.5)
+
+
+def mining_snapshots():
+    if os.getenv('LIVE_RULE_MINING_ENABLED', '0') != '1':
+        return [], 'disabled'
+    try:
+        snapshots = live_snapshots(rule_snapshot_client())
+        return snapshots, 'running' if snapshots else 'waiting_for_worker'
+    except RedisError:
+        return [], 'unavailable'
+
+
+def _serving_rules():
+    if os.getenv('LIVE_RULE_MINING_ENABLED', '0') != '1':
+        return rules_df
+    try:
+        live = serving_live_rules(rule_snapshot_client())
+    except RedisError:
+        return rules_df
+    if not live:
+        return rules_df
+    # All product IDs must belong to the serving catalog; preserve the exact
+    # historical artifact while applying source-specific live overlays in memory.
+    live = [rule for rule in live if rule['antecedent_product_id'] in products_by_id
+            and rule['consequent_product_id'] in products_by_id]
+    if not live:
+        return rules_df
+    base = rules_df.copy()
+    if not _rules_use_catalog_ids(base):
+        for column, name in zip(RULE_ID_COLUMNS, RULE_NAME_COLUMNS):
+            base[column] = base[name].map(lambda value: (_product_for(value) or {}).get('product_id'))
+        base = base.dropna(subset=list(RULE_ID_COLUMNS))
+    return pd.concat([base, pd.DataFrame(live)], ignore_index=True).drop_duplicates(
+        ['antecedents', 'consequents'], keep='last')
+
+
 def event_producer() -> KafkaProducer:
     """Lazily create the browser-to-Kafka producer used by the storefront."""
     global _event_producer
@@ -277,16 +317,17 @@ def _related_products(product: dict[str, Any], limit: int = 6) -> list[dict[str,
     name = product["product_name"]
     # Spark artifacts use catalog IDs; the semantic representative mapping
     # applies only to the legacy name-based fallback.
-    has_catalog_ids = _rules_use_catalog_ids(rules_df)
+    active_rules = _serving_rules()
+    has_catalog_ids = _rules_use_catalog_ids(active_rules)
     if has_catalog_ids:
-        matches = rules_df[
-            pd.to_numeric(rules_df["antecedent_product_id"], errors="coerce").eq(product["product_id"])
+        matches = active_rules[
+            pd.to_numeric(active_rules["antecedent_product_id"], errors="coerce").eq(product["product_id"])
         ].copy()
     else:
         # Serving uses actual catalog products. Experimental semantic clusters
         # must never silently substitute another product's identity or metrics.
         representative = name
-        matches = rules_df[rules_df["antecedents"] == representative].copy()
+        matches = active_rules[active_rules["antecedents"] == representative].copy()
     matches['_ranking_score'] = matches['confidence'] * matches['lift'].map(math.log1p)
     matches = matches.sort_values(['_ranking_score', 'consequents'], ascending=[False, True])
     chosen: list[dict[str, Any]] = []
@@ -302,6 +343,10 @@ def _related_products(product: dict[str, Any], limit: int = 6) -> list[dict[str,
             item = _public_product(candidate)
             item["recommendation_reason"] = f"Often paired with {name}"
             item["recommendation_source"] = "historical_rule"
+            item['rule_source'] = rule.get('source') if pd.notna(rule.get('source')) else 'historical_snapshot'
+            item['rule_version'] = rule.get('run_id') if pd.notna(rule.get('run_id')) else rules_snapshot_version
+            if str(item['rule_source']).startswith('live_'):
+                item['recommendation_source'] = 'live_rule'
             item["lift"] = round(float(rule["lift"]), 3)
             item['prior_score'] = 1 + float(rule['_ranking_score'])
             chosen.append(item)
@@ -341,11 +386,16 @@ def _adaptive_rank_products(
     """Rank historical candidates when browser identity is available."""
     if not products or not user_id or not session_id:
         return products[:limit], None
+    live_versions = sorted({str(item['rule_version']) for item in products
+                            if str(item.get('rule_source', '')).startswith('live_')})
+    snapshot_version = rules_snapshot_version
+    if live_versions:
+        snapshot_version += '+live-' + hashlib.sha256(json.dumps(live_versions).encode()).hexdigest()[:12]
     candidates = [
         {
             "product_id": str(item["product_id"]),
             "prior_score": float(item.get('prior_score') or (1 / (index + 1))),
-            "snapshot_version": rules_snapshot_version,
+            "snapshot_version": snapshot_version,
             "catalog_product_id": item["product_id"],
             **(
                 {"supporting_product_id": item["supporting_product_name"]}
@@ -360,7 +410,7 @@ def _adaptive_rank_products(
             user_id=user_id,
             session_id=session_id,
             candidates=candidates,
-            snapshot_version=rules_snapshot_version,
+            snapshot_version=snapshot_version,
             cart_product_ids=[str(product["product_id"]) for product in (cart_products or [])],
             limit=len(candidates) if historical_candidates.has_collaborative else limit,
         )
@@ -399,10 +449,11 @@ def _cart_candidates(cart_products, limit=24):
     """Score every supporting cart item before selecting the global candidates."""
     cart_ids = {item['product_id'] for item in cart_products}
     cart_names = {item['product_name'] for item in cart_products}
-    if _rules_use_catalog_ids(rules_df):
-        matches = rules_df[pd.to_numeric(rules_df.antecedent_product_id).isin(cart_ids)].copy()
+    active_rules = _serving_rules()
+    if _rules_use_catalog_ids(active_rules):
+        matches = active_rules[pd.to_numeric(active_rules.antecedent_product_id).isin(cart_ids)].copy()
     else:
-        matches = rules_df[rules_df.antecedents.isin(cart_names)].copy()
+        matches = active_rules[active_rules.antecedents.isin(cart_names)].copy()
     matches['_score'] = matches.confidence * matches.lift.map(math.log1p)
     matches = matches.sort_values(['_score', 'consequents'], ascending=[False, True])
     selected = []; seen = set(cart_ids)
@@ -412,10 +463,14 @@ def _cart_candidates(cart_products, limit=24):
         supporting = _product_for(int(rule.antecedent_product_id)) if 'antecedent_product_id' in rule else _product_for(rule.antecedents)
         if candidate and supporting and candidate['product_id'] not in seen:
             item = _public_product(candidate)
+            item['rule_source'] = rule.get('source') if pd.notna(rule.get('source')) else 'historical_snapshot'
+            item['rule_version'] = rule.get('run_id') if pd.notna(rule.get('run_id')) else rules_snapshot_version
             item.update(recommendation_source='historical_rule', recommendation_reason=f"Often paired with {supporting['product_name']}",
                 supporting_product_id=supporting['product_id'], supporting_product_name=supporting['product_name'],
                 lift=float(rule.lift), prior_score=1 + float(rule['_score']),
                 recommendation_id=f"cart:{supporting['product_id']}:{candidate['product_id']}")
+            if str(item['rule_source']).startswith('live_'):
+                item['recommendation_source'] = 'live_rule'
             selected.append(item); seen.add(candidate['product_id'])
             if len(selected) >= rule_limit:
                 break
@@ -456,7 +511,9 @@ def rules_page():
 def rules_catalog():
     eligibility = request.args.get('eligible', 'true')
     sort = request.args.get('sort', 'lift')
-    if eligibility not in {'true', 'false'} or sort not in {'lift', 'confidence', 'support'}:
+    source = request.args.get('source', 'all')
+    if (eligibility not in {'true', 'false'} or sort not in {'lift', 'confidence', 'support'}
+            or source not in {'all', 'historical_snapshot', 'live_storefront', 'live_synthetic'}):
         return jsonify({'error': 'Invalid eligibility filter or sort'}), 400
     try:
         page = max(1, int(request.args.get('page', 1)))
@@ -464,10 +521,17 @@ def rules_catalog():
     except ValueError:
         return jsonify({'error': 'page and per_page must be integers'}), 400
     policy = configured_coupon_policy()
-    all_rows = describe_rules(rules_df.to_dict('records'), _product_for, policy)
+    snapshots, mining_status = mining_snapshots()
+    historical_rows = describe_rules(rules_df.to_dict('records'), _product_for, policy)
+    all_rows = historical_rows + describe_rules([rule for snapshot in snapshots for rule in snapshot['rules']],
+        _product_for, policy)
+    for row in all_rows:
+        row['active_for_serving'] = (row['source'] != 'live_synthetic'
+            or os.getenv('LIVE_RULES_ALLOW_SYNTHETIC', '0') == '1')
     eligible_total = sum(row['coupon_eligible'] for row in all_rows)
     query = request.args.get('q', '').strip().casefold()[:200]
-    rows = [row for row in all_rows if (eligibility == 'false' or row['coupon_eligible'])
+    rows = [row for row in all_rows if (source == 'all' or row['source'] == source)
+            and (eligibility == 'false' or row['coupon_eligible'])
             and (not query or query in row['antecedent']['product_name'].casefold()
                  or query in row['consequent']['product_name'].casefold())]
     rows.sort(key=lambda row: (-row[sort], row['antecedent']['product_name'], row['consequent']['product_name']))
@@ -475,16 +539,23 @@ def rules_catalog():
     pages = max(1, (total + per_page - 1) // per_page)
     page = min(page, pages)
     return jsonify({'rules': rows[(page - 1) * per_page:page * per_page], 'total': total,
-        'historical_total': len(all_rows), 'eligible_total': eligible_total, 'policy': policy,
-        'snapshot_version': rules_snapshot_version, 'source': 'historical_snapshot',
-        'live_rule_mining_enabled': False,
+        'historical_total': len(historical_rows), 'eligible_total': eligible_total, 'policy': policy,
+        'live_total': len(all_rows) - len(historical_rows),
+        'snapshot_version': rules_snapshot_version, 'source': 'combined_rule_catalog',
+        'live_rule_mining_enabled': mining_status != 'disabled', 'mining_status': mining_status,
+        'mining': [{**{key: value for key, value in snapshot.items() if key != 'rules'},
+                    'rule_count': len(snapshot['rules'])} for snapshot in snapshots],
         'pagination': {'page': page, 'pages': pages, 'per_page': per_page}})
 
 
 @app.get('/api/rules/live')
 def live_rule_signals():
+    snapshots, mining_status = mining_snapshots()
+    mining = {'live_rule_mining_enabled': mining_status != 'disabled', 'mining_status': mining_status,
+        'mining': [{**{key: value for key, value in snapshot.items() if key != 'rules'},
+                    'rule_count': len(snapshot['rules'])} for snapshot in snapshots]}
     if not isinstance(adaptive_service, RedisAdaptiveRankingService):
-        return jsonify({'status': 'not_shared', 'products': [], 'live_rule_mining_enabled': False,
+        return jsonify({'status': 'not_shared', 'products': [], **mining,
                         'message': 'Shared live ranking is not configured in this server.'})
     store = RedisFeatureStore(adaptive_service.redis_client, adaptive_service.namespace)
     try:
@@ -495,7 +566,7 @@ def live_rule_signals():
         signals = store.product_signals(identifiers + names)
         updates = int(adaptive_service.redis_client.get(f'{adaptive_service.namespace}:bandit:updates') or 0)
     except RedisError:
-        return jsonify({'status': 'unavailable', 'products': [], 'live_rule_mining_enabled': False,
+        return jsonify({'status': 'unavailable', 'products': [], **mining,
                         'message': 'Live ranking data is unavailable. Historical rules remain readable.'}), 503
     products = []
     for index, product in enumerate(catalog_products):
@@ -506,7 +577,7 @@ def live_rule_signals():
                 'legacy_positive_weight': legacy['positive_weight']})
     products.sort(key=lambda row: (-row['positive_weight'], -row['legacy_positive_weight'], row['product_name']))
     return jsonify({'status': 'live', 'products': products, 'feedback_updates': updates,
-        'live_rule_mining_enabled': False, 'as_of': datetime.now(timezone.utc).isoformat(),
+        **mining, 'as_of': datetime.now(timezone.utc).isoformat(),
         'source': 'shared_redis_ranking_signals'})
 
 
@@ -578,6 +649,7 @@ def publish_storefront_event():
         return jsonify({"error": str(exc)}), 400
     authorize(event['user_id'], event)
     event.pop('csrf_token', None)
+    event['traffic_source'] = 'storefront'
     # Browser event time is stamped by the server; a client cannot backdate a view.
     event['event_time'] = datetime.now(timezone.utc).isoformat()
     if event.get('catalog_product_id') is not None:
