@@ -2,6 +2,7 @@
 import csv
 import http.cookiejar
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -22,7 +23,8 @@ from pipeline.rules import load_rules
 
 
 @pytest.mark.skipif(not os.getenv('KAFKA_TEST_BOOTSTRAP'), reason='Set KAFKA_TEST_BOOTSTRAP for HTTP acceptance')
-def test_owned_shopper_receives_and_redeems_live_coupon(tmp_path):
+@pytest.mark.parametrize('trigger', ['product_view_ended', 'basket_opened', 'recommendation_clicked'])
+def test_owned_shopper_receives_and_redeems_live_coupon(tmp_path, trigger):
     broker = os.environ['KAFKA_TEST_BOOTSTRAP']; token = uuid.uuid4().hex
     parts = urlsplit(os.getenv('REDIS_TEST_URL', 'redis://localhost:6388/15'))
     redis_url = urlunsplit(parts._replace(path='/13'))
@@ -63,17 +65,29 @@ def test_owned_shopper_receives_and_redeems_live_coupon(tmp_path):
         user = re.search('data-shopper-id="([^"]+)"', html).group(1)
         csrf = re.search('data-csrf-token="([^"]+)"', html).group(1)
         with (project / 'app/rules.csv').open() as handle:
-            rule = next(row for row in csv.DictReader(handle) if float(row['support']) >= .012 and float(row['confidence']) >= .1 and float(row['lift']) >= 1.5)
-        worker = subprocess.Popen([sys.executable, '-m', 'pipeline.consumer', '--group-id', 'audit-http-' + token, '--max-events', '3'],
+            qualifying = [row for row in csv.DictReader(handle) if float(row['support']) >= .012 and float(row['confidence']) >= .1 and float(row['lift']) >= 1.5]
+        antecedent = qualifying[0]['antecedents']
+        rule = min((row for row in qualifying if row['antecedents'] == antecedent),
+            key=lambda row: (-float(row['confidence']) * math.log1p(float(row['lift'])), row['consequents']))
+        event_count = '3' if trigger == 'product_view_ended' else '2'
+        worker = subprocess.Popen([sys.executable, '-m', 'pipeline.consumer', '--group-id', 'audit-http-' + token, '--max-events', event_count],
             cwd=project, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         base = dict(user_id=user, session_id='s', event_time='2026-10-22T12:00:00Z')
-        for kind, name in [('cart_item_added', rule['antecedents']), ('product_view_started', rule['consequents'])]:
-            assert request('/api/events', {**base, 'event_id': uuid.uuid4().hex, 'event_type': kind, 'product_id': name}, csrf)[0] == 202
-        time.sleep(.15)
-        assert request('/api/events', {**base, 'event_id': uuid.uuid4().hex, 'event_type': 'product_view_ended',
-            'product_id': rule['consequents'], 'dwell_seconds': 1}, csrf)[0] == 202
+        assert request('/api/events', {**base, 'event_id': uuid.uuid4().hex, 'event_type': 'cart_item_added',
+            'product_id': rule['antecedents']}, csrf)[0] == 202
+        if trigger == 'product_view_ended':
+            assert request('/api/events', {**base, 'event_id': uuid.uuid4().hex, 'event_type': 'product_view_started',
+                'product_id': rule['consequents']}, csrf)[0] == 202
+            time.sleep(.15)
+        action = dict(event_id=uuid.uuid4().hex, event_type=trigger)
+        if trigger != 'basket_opened':
+            action['product_id'] = rule['consequents']
+        if trigger == 'product_view_ended':
+            action['dwell_seconds'] = 1
+        assert request('/api/events', {**base, **action}, csrf)[0] == 202
         stdout, stderr = worker.communicate(timeout=30)
         assert worker.returncode == 0, stderr.decode()
+        assert json.loads(stdout.decode().splitlines()[-1])['reason']['trigger'] == trigger
         status, body = request('/api/coupons/available?user_id=' + user + '&session_id=s')
         available = json.loads(body)['coupons']; assert len(available) == 1
         order = dict(order_id='BS-' + token, user_id=user, session_id='s', name='Audit Shopper',

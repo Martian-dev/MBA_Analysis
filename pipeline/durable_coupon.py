@@ -69,13 +69,14 @@ class DurableCouponProcessor:
                 transaction.xadd(EXPOSURES_KEY, {'json': json.dumps({
                     'user_id': event['user_id'], 'event_time': event['event_time'],
                     'arm': arm_for(event['user_id'], self.policy.get('holdout_fraction', 0)),
-                    'product_id': event['product_id'], 'event_id': event['event_id'],
+                    'product_id': decision['product_id'] if decision else event.get('product_id'),
+                    'event_id': event['event_id'], 'trigger': event['event_type'],
                 })})
             if decision:
                 CouponLedger.enqueue_issue(transaction, decision)
                 transaction.hset(OUTBOX_KEY, decision['coupon_id'], json.dumps(decision))
                 ActivityLog.enqueue(transaction, "coupon_issued", decision)
-            elif event['event_type'] == 'product_view_ended':
+            elif event['event_type'] in {'product_view_ended', 'basket_opened', 'recommendation_clicked'}:
                 ActivityLog.enqueue(transaction, "coupon_suppressed", {**event, "reason": reason})
             transaction.execute()
             return decision, reason

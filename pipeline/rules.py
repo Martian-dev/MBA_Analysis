@@ -81,3 +81,9 @@ class RedisRuleLookup:
     def lookup(self, antecedent: str, consequent: str) -> dict[str, Any] | None:
         raw = self.client.hget(f"{self.prefix}{antecedent}", consequent)
         return json.loads(raw) if raw else None
+
+    def consequents(self, antecedent: str) -> dict[str, dict[str, Any]]:
+        return {
+            target: json.loads(raw)
+            for target, raw in self.client.hgetall(f"{self.prefix}{antecedent}").items()
+        }

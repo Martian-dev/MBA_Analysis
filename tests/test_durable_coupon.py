@@ -30,6 +30,9 @@ class Rules:
     def lookup(self, a, b):
         return {'support': .02, 'confidence': .3, 'lift': 2.1}
 
+    def consequents(self, antecedent):
+        return {'B': self.lookup(antecedent, 'B')} if antecedent == 'A' else {}
+
 
 def events():
     user = str(uuid.uuid4())
@@ -110,6 +113,39 @@ def test_cart_snapshot_rehydrates_a_new_session_without_duplicate_adds(client):
     DurableCouponProcessor(client, Rules()).process(trace[1])
     DurableCouponProcessor(client, Rules()).process(trace[2])
     assert DurableCouponProcessor(client, Rules()).process(trace[3])[1] == 'coupon_issued'
+
+
+@pytest.mark.parametrize('trigger', ['basket_opened', 'recommendation_clicked'])
+def test_new_triggers_commit_one_recoverable_coupon_and_deduplicate_across_paths(client, trigger):
+    trace = events()
+    DurableCouponProcessor(client, Rules()).process(trace[0])
+    action = {key: trace[0][key] for key in ('user_id', 'session_id', 'event_time')}
+    action.update(event_id=uuid.uuid4().hex, event_type=trigger)
+    if trigger == 'recommendation_clicked':
+        action['product_id'] = 'B'
+    first, reason = DurableCouponProcessor(client, Rules()).process(action)
+    assert reason == 'coupon_issued'
+    assert first['reason']['trigger'] == trigger
+    assert DurableCouponProcessor(client, Rules()).process(action)[0] == first
+    clicked = {**action, 'event_id': uuid.uuid4().hex, 'event_type': 'recommendation_clicked', 'product_id': 'B'}
+    assert DurableCouponProcessor(client, Rules()).process(clicked)[1] == 'coupon_already_issued'
+    for view in trace[2:]:
+        result = DurableCouponProcessor(client, Rules()).process(view)
+    assert result[1] == 'coupon_already_issued'
+    assert len(CouponLedger(client).available(user_id=action['user_id'], session_id='s')) == 1
+    delivered = []
+    DurableCouponProcessor(client, Rules()).drain(lambda coupon: delivered.append(coupon['coupon_id']))
+    assert delivered.count(first['coupon_id']) == 1
+
+
+def test_basket_holdout_without_a_product_id_is_logged_without_issuing(client):
+    trace = events()
+    processor = DurableCouponProcessor(client, Rules(), holdout_fraction=1)
+    processor.process(trace[0])
+    action = {key: trace[0][key] for key in ('user_id', 'session_id', 'event_time')}
+    action.update(event_id=uuid.uuid4().hex, event_type='basket_opened')
+    assert processor.process(action) == (None, 'experiment_control')
+    assert CouponLedger(client).available(user_id=action['user_id'], session_id='s') == []
 
 
 @pytest.mark.skipif(not os.getenv('REDIS_TEST_CONTAINER'), reason='Set by scripts/verify_audit.sh for AOF restart acceptance')

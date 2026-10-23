@@ -7,7 +7,7 @@ let couponListSignature = '';
 
 const text = value => String(value ?? '—');
 const time = value => value ? new Date(value).toISOString().slice(11, 19) : '—';
-const actionLabel = value => ({cart_item_added:'Cart add',cart_item_removed:'Cart remove',product_view_started:'View started',product_view_ended:'View ended'}[value] || value);
+const actionLabel = value => ({cart_item_added:'Cart add',cart_item_removed:'Cart remove',product_view_started:'View started',product_view_ended:'View ended',basket_opened:'Basket opened',recommendation_clicked:'Recommendation clicked'}[value] || value);
 const reasonLabel = value => ({cart_updated:'Cart updated',view_started:'Watching',below_dwell_threshold:'Short view',product_in_cart:'Already in cart',coupon_already_issued:'Already offered',below_confidence_threshold:'Confidence too low',below_support_threshold:'Support too low',no_qualifying_rule:'No rule match',coupon_issued:'Coupon issued'}[value] || value || 'Observed');
 
 function setConnection(state, label) {
@@ -44,11 +44,13 @@ function showDecision(entry) {
   target.innerHTML = '';
   const offer = document.createElement('div');
   offer.className = 'offer';
-  offer.innerHTML = `<div class="offer-kicker">COUPON ISSUED · MOCK OFFER</div><h3 class="offer-product"></h3><div class="offer-value"><span></span><small> off</small></div><p class="offer-summary">This offer is ready to be applied to the viewed product.</p><dl class="evidence"><div><dt>Cart evidence</dt><dd class="support"></dd></div><div><dt>Observed dwell</dt><dd class="dwell"></dd></div><div><dt>Rule lift</dt><dd class="lift"></dd></div><div><dt>Confidence</dt><dd class="confidence"></dd></div></dl><span class="offer-id"></span>`;
+  offer.innerHTML = `<div class="offer-kicker">COUPON ISSUED · MOCK OFFER</div><h3 class="offer-product"></h3><div class="offer-value"><span></span><small> off</small></div><p class="offer-summary">This offer is ready to be applied to the recommended product.</p><dl class="evidence"><div><dt>Cart evidence</dt><dd class="support"></dd></div><div><dt>Trigger</dt><dd class="trigger"></dd></div><div><dt>Rule lift</dt><dd class="lift"></dd></div><div><dt>Confidence</dt><dd class="confidence"></dd></div></dl><span class="offer-id"></span>`;
   offer.querySelector('.offer-product').textContent = p.product_id;
   offer.querySelector('.offer-value span').textContent = `${p.discount_percent}%`;
   offer.querySelector('.support').textContent = p.supporting_cart_item;
-  offer.querySelector('.dwell').textContent = `${p.reason.dwell_seconds}s`;
+  offer.querySelector('.trigger').textContent = p.reason?.dwell_seconds != null
+    ? `Product view · ${p.reason.dwell_seconds}s`
+    : actionLabel(p.reason?.trigger || 'Unknown');
   offer.querySelector('.lift').textContent = Number(p.lift).toFixed(2);
   offer.querySelector('.confidence').textContent = `${(Number(p.confidence) * 100).toFixed(1)}%`;
   offer.querySelector('.offer-id').textContent = `Coupon ID · ${p.coupon_id}`;

@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from collections import OrderedDict
+import math
 from typing import Any, Protocol
 
 from .contracts import validate_event
@@ -13,6 +14,8 @@ from .experiment import arm_for
 
 class RuleLookup(Protocol):
     def lookup(self, antecedent: str, consequent: str) -> dict[str, Any] | None: ...
+
+    def consequents(self, antecedent: str) -> dict[str, dict[str, Any]]: ...
 
 
 @dataclass(frozen=True)
@@ -94,6 +97,8 @@ class CouponEngine:
             "cart_item_added",
             "cart_item_removed",
             "cart_synchronized",
+            "basket_opened",
+            "recommendation_clicked",
             "product_view_started",
             "product_view_ended",
         }:
@@ -108,7 +113,24 @@ class CouponEngine:
         if event_type == 'cart_synchronized':
             state.cart = {item['product_id']: item['quantity'] for item in event['cart']}
             return None, 'cart_updated'
+        if event_type == 'basket_opened':
+            if not state.cart:
+                return None, 'empty_basket'
+            candidates = [
+                (-float(metrics['confidence']) * math.log1p(float(metrics['lift'])), target)
+                for cart_item in state.cart
+                for target, metrics in self.rules.consequents(cart_item).items()
+                if target not in state.cart and self._rule_rejection(metrics) is None
+            ]
+            if not candidates:
+                return None, 'no_qualifying_rule'
+            # Do not skip previously offered targets: reopening an unchanged
+            # basket must not walk down the list issuing additional coupons.
+            return self._issue_coupon(event, state, min(candidates)[1])
         product = event["product_id"]
+
+        if event_type == 'recommendation_clicked':
+            return self._issue_coupon(event, state, product)
 
         if event_type == "cart_item_added":
             state.cart[product] = event.get("cart_quantity", min(99, state.cart.get(product, 0) + event.get("quantity", 1)))
@@ -139,22 +161,29 @@ class CouponEngine:
         dwell = min(float(event["dwell_seconds"]), elapsed)
         if dwell < self.dwell_threshold_seconds:
             return None, "below_dwell_threshold"
+        return self._issue_coupon(event, state, product, dwell=dwell)
+
+    def _rule_rejection(self, metrics: dict[str, Any] | None) -> str | None:
+        if not metrics or float(metrics['lift']) < self.min_lift:
+            return 'no_qualifying_rule'
+        if float(metrics.get('confidence', 0)) < self.min_confidence:
+            return 'below_confidence_threshold'
+        if float(metrics.get('support', 0)) < self.min_support:
+            return 'below_support_threshold'
+        return None
+
+    def _issue_coupon(
+        self, event: dict[str, Any], state: UserState, product: str, *, dwell: float | None = None,
+    ) -> tuple[dict[str, Any] | None, str]:
         if product in state.cart:
             return None, "product_in_cart"
         best: tuple[float, float, float, str, dict[str, Any]] | None = None
-        saw_rule = False
-        rejected_for_confidence = False
-        rejected_for_support = False
+        rejections = set()
         for cart_item in state.cart:
             metrics = self.rules.lookup(cart_item, product)
-            if not metrics or float(metrics["lift"]) < self.min_lift:
-                continue
-            saw_rule = True
-            if float(metrics.get("confidence", 0)) < self.min_confidence:
-                rejected_for_confidence = True
-                continue
-            if float(metrics.get("support", 0)) < self.min_support:
-                rejected_for_support = True
+            rejection = self._rule_rejection(metrics)
+            if rejection:
+                rejections.add(rejection)
                 continue
             candidate = (
                 float(metrics["lift"]),
@@ -166,12 +195,10 @@ class CouponEngine:
             if best is None or candidate[0] > best[0]:
                 best = candidate
         if best is None:
-            if rejected_for_confidence:
+            if 'below_confidence_threshold' in rejections:
                 return None, "below_confidence_threshold"
-            if rejected_for_support:
+            if 'below_support_threshold' in rejections:
                 return None, "below_support_threshold"
-            if saw_rule:
-                return None, "no_qualifying_rule"
             return None, "no_qualifying_rule"
 
         if arm_for(event['user_id'], self.holdout_fraction) == 'control':
@@ -195,8 +222,9 @@ class CouponEngine:
             "confidence": float(metrics["confidence"]),
             "support": float(metrics["support"]),
             "reason": {
-                "dwell_seconds": dwell,
-                "dwell_threshold_seconds": self.dwell_threshold_seconds,
+                "trigger": event['event_type'],
+                **({'dwell_seconds': dwell, 'dwell_threshold_seconds': self.dwell_threshold_seconds}
+                   if dwell is not None else {}),
                 "minimum_lift": self.min_lift,
                 "minimum_confidence": self.min_confidence,
                 "minimum_support": self.min_support,

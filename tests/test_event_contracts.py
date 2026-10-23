@@ -24,6 +24,7 @@ def base_event(event_type, **extra):
     ("event_type", "extra"),
     [
         ("search_performed", {"query": "avocado"}),
+        ("basket_opened", {}),
         ("recommendation_impression", {"product_id": "p1", "impression_id": "imp-1"}),
         ("recommendation_clicked", {"product_id": "p1", "impression_id": "imp-1"}),
         ("coupon_applied", {"product_id": "p1", "coupon_id": "coupon-1"}),

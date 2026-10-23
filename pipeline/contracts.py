@@ -13,6 +13,7 @@ EVENT_TYPES = frozenset(
         "cart_item_added",
         "cart_item_removed",
         "cart_synchronized",
+        "basket_opened",
         "search_performed",
         "recommendation_impression",
         "recommendation_clicked",

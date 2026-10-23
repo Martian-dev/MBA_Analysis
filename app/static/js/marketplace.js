@@ -246,6 +246,7 @@
         drawer.removeAttribute('inert'); drawer.setAttribute('aria-hidden', 'false'); document.body.classList.add('drawer-open');
         document.querySelectorAll('[data-open-cart]').forEach(button => button.setAttribute('aria-expanded', 'true'));
         drawer.querySelector('[data-close-cart]')?.focus();
+        publish('basket_opened').catch(() => {});
     }
     function closeCart() {
         const drawer = document.querySelector('#cart-drawer'); const scrim = document.querySelector('[data-cart-scrim]');
