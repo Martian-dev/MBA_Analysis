@@ -4,6 +4,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     const productId = Number(document.body.dataset.productId);
     const stage = document.querySelector('[data-product-stage]');
     const relatedGrid = document.querySelector('[data-related-grid]');
+    const relatedSection = document.querySelector('[data-related-section]');
+    const nextSection = document.querySelector('[data-next-section]');
+    const nextCard = document.querySelector('[data-next-pick]');
     const basketRecommendationCard = document.querySelector('[data-featured-pairing]');
     const basketRecommendationSection = document.querySelector('[data-featured-section]');
     let viewStartedAt = null;
@@ -14,6 +17,54 @@ document.addEventListener('DOMContentLoaded', async () => {
     let viewEnded = false;
     let recommendationRequestId = 0;
     let unsubscribeFromBasket = null;
+    let unsubscribeFromOffers = null;
+    let relatedProducts = [];
+    let availableOffers = [];
+    let offerRequestId = 0;
+    let nextObserver = null;
+    let pageClosed = false;
+    const seenNextPicks = new Set();
+
+    function renderNextRecommendation() {
+        nextObserver?.disconnect();
+        const cartIds = new Set(Market.getCart().map(item => Number(item.product_id)));
+        const candidates = relatedProducts.filter(item => Number(item.product_id) !== productId && !cartIds.has(Number(item.product_id)));
+        const recommendation = candidates[0];
+        nextSection.hidden = !recommendation;
+        nextCard.innerHTML = '';
+        relatedSection.hidden = candidates.length < 2;
+        relatedGrid.innerHTML = candidates.slice(1).map(item => Market.productCard(item, {source: 'product_related'})).join('');
+        if (!recommendation) return;
+        const offer = availableOffers.find(item => item.product_id === recommendation.product_name);
+        const offerText = offer ? '* Offers available' : '* Explore for potential offers';
+        const linkAttributes = `href="/product/${recommendation.product_id}" data-product-link data-source="product_next_pick" data-product-id="${recommendation.product_id}" data-product-name="${Market.escapeHtml(recommendation.product_name)}" data-impression-id="${Market.escapeHtml(recommendation.impression_id || '')}" data-policy-version="${Market.escapeHtml(recommendation.policy_version || '')}" data-snapshot-version="${Market.escapeHtml(recommendation.snapshot_version || '')}"`;
+        nextCard.innerHTML = `${Market.productArtwork(recommendation)}<div class="basket-result__copy"><p class="basket-result__because">${Market.escapeHtml(recommendation.recommendation_reason || 'Suggested from the catalog')}</p><a ${linkAttributes}><h3>${Market.escapeHtml(recommendation.product_name)}</h3></a><p>${Market.money(recommendation.price_inr)} · illustrative price</p><small class="next-pick__offer${offer ? ' next-pick__offer--available' : ''}">${offerText}</small></div><a class="button button--secondary" ${linkAttributes}>Explore this item${Market.icon('chevron')}</a>`;
+        const impressionKey = `${recommendation.impression_id || ''}:${recommendation.product_id}`;
+        const recordImpression = () => {
+            if (seenNextPicks.has(impressionKey) || pageClosed) return;
+            seenNextPicks.add(impressionKey);
+            Market.publishRecommendationImpression(recommendation, 'product_next_pick').catch(() => {});
+        };
+        if ('IntersectionObserver' in window) {
+            nextObserver = new window.IntersectionObserver(entries => {
+                if (entries.some(entry => entry.isIntersecting)) { recordImpression(); nextObserver.disconnect(); }
+            }, {threshold: 0.5});
+            nextObserver.observe(nextCard);
+        } else recordImpression();
+    }
+
+    async function refreshOffers() {
+        const requestId = ++offerRequestId;
+        try {
+            const offers = await Market.getAvailableOffers();
+            if (requestId !== offerRequestId || pageClosed) return;
+            availableOffers = offers;
+        } catch (_) {
+            if (requestId !== offerRequestId || pageClosed) return;
+            availableOffers = [];
+        }
+        renderNextRecommendation();
+    }
 
     function quantityFor(id) { return Market.getCart().find(item => Number(item.product_id) === Number(id))?.quantity || 0; }
     function renderStage() {
@@ -85,17 +136,20 @@ document.addEventListener('DOMContentLoaded', async () => {
         Market.getCart().forEach(item => detailParams.append('cart_product_id', String(item.product_id)));
         const response = await fetch(`/api/products/${productId}?${detailParams}`); if (!response.ok) throw new Error();
         const data = await response.json(); product = data.product;
-        unsubscribeFromBasket = Market.subscribe(() => { renderStage(); renderBasketRecommendation(); });
+        relatedProducts = data.related_products || [];
+        unsubscribeFromBasket = Market.subscribe(() => { renderStage(); renderNextRecommendation(); renderBasketRecommendation(); refreshOffers(); });
+        unsubscribeFromOffers = Market.subscribeOffers(refreshOffers);
+        renderNextRecommendation();
+        refreshOffers();
         renderStage(); await renderBasketRecommendation();
-        relatedGrid.innerHTML = data.related_products.map(item => Market.productCard(item, {source: 'product_related'})).join('');
         await startVisibleView();
-        data.related_products.forEach(item => Market.publish('recommendation_impression', {product_id: item.product_name, catalog_product_id: item.product_id, product_name: item.product_name, impression_id: item.impression_id, policy_version: item.policy_version, snapshot_version: item.snapshot_version, placement: 'product_related', supporting_product_id: product.product_id}).catch(() => {}));
+        relatedProducts.filter(item => Number(item.product_id) !== productId && !quantityFor(item.product_id)).slice(1).forEach(item => Market.publish('recommendation_impression', {product_id: item.product_name, catalog_product_id: item.product_id, product_name: item.product_name, impression_id: item.impression_id, policy_version: item.policy_version, snapshot_version: item.snapshot_version, placement: 'product_related', supporting_product_id: product.product_id}).catch(() => {}));
     } catch (_) {
         stage.innerHTML = '<div class="load-error"><strong>This product could not be loaded.</strong><p>Return to the market and choose another item.</p><a class="button button--primary" href="/">Back to market</a></div>';
     }
-    addEventListener('pagehide', () => { viewGeneration += 1; unsubscribeFromBasket?.(); endView(true); }, {once: true});
+    addEventListener('pagehide', () => { pageClosed = true; viewGeneration += 1; nextObserver?.disconnect(); unsubscribeFromBasket?.(); unsubscribeFromOffers?.(); endView(true); }, {once: true});
     document.addEventListener('visibilitychange', () => {
         if (document.visibilityState === 'hidden') { viewGeneration += 1; endView(); }
-        else startVisibleView();
+        else { startVisibleView(); refreshOffers(); }
     });
 });

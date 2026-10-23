@@ -13,11 +13,15 @@
             <div class="product-stage__visual product-skeleton"></div>
             <div class="product-stage__copy"><div class="skeleton-line"></div><div class="skeleton-line skeleton-line--wide"></div><div class="skeleton-line"></div></div>
         </section>
+        <section class="basket-result next-pick" data-next-section aria-labelledby="next-pick-title" hidden>
+            <div class="basket-result__heading"><p class="overline">Keep exploring</p><h2 id="next-pick-title">Suggested next</h2><p class="next-pick__intro">Offers depend on your basket and viewing activity.</p></div>
+            <article class="basket-result__card" data-next-pick aria-live="polite"></article>
+        </section>
         <section class="basket-result" data-featured-section aria-labelledby="basket-result-title" hidden>
             <div class="basket-result__heading"><p class="overline">Basket analysis result</p><h2 id="basket-result-title">Recommended from your basket</h2></div>
             <article class="basket-result__card" data-featured-pairing aria-live="polite"></article>
         </section>
-        <section class="related" aria-labelledby="related-title">
+        <section class="related" data-related-section aria-labelledby="related-title">
             <div class="section-heading"><div><p class="overline">Complete the aisle</p><h2 id="related-title">Worth a look with this</h2></div><a href="/">Browse all products<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14M13 6l6 6-6 6"/></svg></a></div>
             <div class="product-grid product-grid--related" data-related-grid></div>
         </section>

@@ -39,10 +39,11 @@ const element = () => ({
 });
 const nextTask = () => new Promise(resolve => setTimeout(resolve, 0));
 
-async function renderProductPage({cart: initialCart, recommendations = [], recommendationLoader = null}) {
+async function renderProductPage({cart: initialCart, recommendations = [], recommendationLoader = null, relatedProducts = [], offers = [], offersOffline = false}) {
     let cart = initialCart;
     let onReady;
     let basketListener = () => {};
+    let offerListener = () => {};
     let recommendationCall = 0;
     const requestedCarts = [];
     const published = [];
@@ -52,6 +53,9 @@ async function renderProductPage({cart: initialCart, recommendations = [], recom
     const elements = {
         '[data-product-stage]': element(),
         '[data-related-grid]': element(),
+        '[data-related-section]': element(),
+        '[data-next-section]': element(),
+        '[data-next-pick]': element(),
         '[data-featured-pairing]': element(),
         '[data-featured-section]': element(),
         '[data-product-breadcrumb]': element(),
@@ -74,15 +78,17 @@ async function renderProductPage({cart: initialCart, recommendations = [], recom
             return {recommendations: items};
         },
         subscribe(listener) { basketListener = listener; return () => { basketListener = () => {}; }; },
+        subscribeOffers(listener) { offerListener = listener; return () => { offerListener = () => {}; }; },
+        async getAvailableOffers() { if (offersOffline) throw new Error('offline'); return offers; },
         productArtwork: product => `<span data-art-product="${product.product_id}"></span>`,
         escapeHtml: String,
         titleCase: String,
         money: value => `INR ${value}`,
         icon: () => '',
         addProduct() {},
-        productCard: () => '',
+        productCard: product => `<article>${product.product_name}</article>`,
         publish: async (kind, payload) => { published.push({kind, payload}); },
-        publishRecommendationImpression: async () => {},
+        publishRecommendationImpression: async (product, placement) => { published.push({kind: 'recommendation_impression', payload: {...product, placement}}); },
     };
     const document = {
         body: {dataset: {productId: '16'}},
@@ -98,7 +104,7 @@ async function renderProductPage({cart: initialCart, recommendations = [], recom
         window: {BasketSignal: market},
         fetch: async url => {
             if (String(url).startsWith('/api/products/16')) {
-                return {ok: true, json: async () => ({product: currentProduct, related_products: []})};
+                return {ok: true, json: async () => ({product: currentProduct, related_products: relatedProducts})};
             }
             throw new Error(`Unexpected direct request: ${url}`);
         },
@@ -117,6 +123,7 @@ async function renderProductPage({cart: initialCart, recommendations = [], recom
         elements,
         requestedCarts,
         published,
+        async replaceOffers(nextOffers) { offers = nextOffers; offerListener(); await nextTask(); },
         async advanceTime(milliseconds) {
             now += milliseconds;
             if (timer && timer.due <= now) { const callback = timer.callback; timer = null; callback(); }
@@ -184,4 +191,30 @@ const staleResponse = await renderProductPage({
 assert.equal(staleResponse.elements['[data-featured-section]'].hidden, true);
 assert.deepEqual(staleResponse.requestedCarts, [[16], [16, 3549]]);
 
-console.log('PASS: product page keeps basket-supported recommendations distinct and current');
+const alternative = {...recommendation, product_id: 100, product_name: 'Alternative topping'};
+const nextPick = await renderProductPage({cart: [], relatedProducts: [currentProduct, recommendation, alternative]});
+assert.equal(nextPick.elements['[data-next-section]'].hidden, false);
+assert.match(nextPick.elements['[data-next-pick]'].innerHTML, /Magic Shell Caramel Flavored Topping/);
+assert.match(nextPick.elements['[data-next-pick]'].innerHTML, /Often paired with Mint Chocolate Flavored Syrup/);
+assert.match(nextPick.elements['[data-next-pick]'].innerHTML, /Explore for potential offers/);
+assert.doesNotMatch(nextPick.elements['[data-next-pick]'].innerHTML, /Offers available/);
+assert.doesNotMatch(nextPick.elements['[data-related-grid]'].innerHTML, /Magic Shell/);
+assert.match(nextPick.elements['[data-related-grid]'].innerHTML, /Alternative topping/);
+await nextPick.replaceOffers([{product_id: alternative.product_name, discount_percent: 5}]);
+assert.doesNotMatch(nextPick.elements['[data-next-pick]'].innerHTML, /Offers available/);
+await nextPick.replaceOffers([{product_id: recommendation.product_name, discount_percent: 5}]);
+assert.match(nextPick.elements['[data-next-pick]'].innerHTML, /\* Offers available/);
+await nextPick.replaceOffers([]);
+assert.doesNotMatch(nextPick.elements['[data-next-pick]'].innerHTML, /Offers available/);
+assert.equal(nextPick.published.filter(event => event.payload.placement === 'product_next_pick').length, 1);
+await nextPick.replaceCart([recommendation]);
+assert.match(nextPick.elements['[data-next-pick]'].innerHTML, /Alternative topping/);
+await nextPick.replaceCart([recommendation, alternative]);
+assert.equal(nextPick.elements['[data-next-section]'].hidden, true);
+assert.equal(nextPick.elements['[data-related-section]'].hidden, true);
+const offlinePick = await renderProductPage({cart: [], relatedProducts: [recommendation], offersOffline: true});
+assert.equal(offlinePick.elements['[data-next-section]'].hidden, false);
+assert.doesNotMatch(offlinePick.elements['[data-next-pick]'].innerHTML, /Offers available/);
+assert.equal(noValidResult.elements['[data-next-section]'].hidden, true);
+
+console.log('PASS: product page shows a ranked next pick, truthful live offers, and distinct basket recommendations');

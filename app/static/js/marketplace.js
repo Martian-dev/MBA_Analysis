@@ -8,6 +8,7 @@
     const USER_KEY = 'basket-signal-user';
     const SESSION_KEY = 'basket-signal-session';
     const listeners = new Set();
+    const offerListeners = new Set();
     let activitySource = null;
     let drawerReturnFocus = null;
     let cartRecommendationRequest = null;
@@ -257,6 +258,7 @@
     }
 
     async function handleOffer(payload) {
+        offerListeners.forEach(listener => listener());
         let product = getCart().find(item => item.product_name === payload.product_id);
         if (!product) {
             try {
@@ -320,6 +322,13 @@
         publish, publishRecommendationImpression, getCartRecommendations,
         toast, addProduct, changeQuantity, getCart, getCoupons, totals, persist,
         subscribe(listener) { listeners.add(listener); return () => listeners.delete(listener); },
+        subscribeOffers(listener) { offerListeners.add(listener); return () => offerListeners.delete(listener); },
+        async getAvailableOffers() {
+            const params = new URLSearchParams({user_id: identity.userId, session_id: identity.sessionId});
+            const response = await fetch(`/api/coupons/available?${params}`);
+            if (!response.ok) throw new Error('Available offers could not be checked');
+            return (await response.json()).coupons || [];
+        },
         clearOrder() { cart = {}; coupons = {}; localStorage.removeItem(CART_KEY); sessionStorage.removeItem(COUPON_KEY); persist(); synchronizeCart().catch(() => {}); },
         newOrderId() { return `BS-${(globalThis.crypto?.randomUUID?.() || randomId('order')).replace(/[^A-Za-z0-9-]/g, '')}`; },
     };
