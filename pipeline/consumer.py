@@ -9,6 +9,7 @@ import redis
 from kafka import KafkaConsumer, KafkaProducer
 
 from .durable_coupon import DurableCouponProcessor
+from .coupon_engine import configured_coupon_policy
 from .observability import ActivityLog
 from .rules import RedisRuleLookup
 from .serialization import JsonSerializer
@@ -32,13 +33,7 @@ def main():
     parser.add_argument('--max-events', type=int, default=0)
     args = parser.parse_args()
     client = redis.Redis.from_url(args.redis_url, decode_responses=True)
-    processor = DurableCouponProcessor(client, RedisRuleLookup(client),
-        dwell_threshold_seconds=float(os.getenv('DWELL_THRESHOLD_SECONDS', '45')),
-        min_lift=float(os.getenv('MIN_LIFT', '1.5')),
-        min_confidence=float(os.getenv('MIN_CONFIDENCE', '.10')),
-        min_support=float(os.getenv('MIN_SUPPORT', '.012')),
-        discount_percent=int(os.getenv('DISCOUNT_PERCENT', '5')),
-        holdout_fraction=float(os.getenv('COUPON_HOLDOUT_FRACTION', '0')))
+    processor = DurableCouponProcessor(client, RedisRuleLookup(client), **configured_coupon_policy())
     consumer = KafkaConsumer(EVENTS_TOPIC, bootstrap_servers=args.bootstrap_servers,
         group_id=args.group_id, auto_offset_reset='earliest', enable_auto_commit=False)
     producer = KafkaProducer(bootstrap_servers=args.bootstrap_servers, value_serializer=JsonSerializer())

@@ -5,17 +5,27 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 from collections import OrderedDict
-import math
+import os
 from typing import Any, Protocol
 
 from .contracts import validate_event
 from .experiment import arm_for
 
 
+def configured_coupon_policy() -> dict[str, float | int]:
+    """Shared consumer and inspection settings; eligibility is not availability."""
+    return {
+        'dwell_threshold_seconds': float(os.getenv('DWELL_THRESHOLD_SECONDS', '45')),
+        'min_lift': float(os.getenv('MIN_LIFT', '1.5')),
+        'min_confidence': float(os.getenv('MIN_CONFIDENCE', '.10')),
+        'min_support': float(os.getenv('MIN_SUPPORT', '.012')),
+        'discount_percent': int(os.getenv('DISCOUNT_PERCENT', '5')),
+        'holdout_fraction': float(os.getenv('COUPON_HOLDOUT_FRACTION', '0')),
+    }
+
+
 class RuleLookup(Protocol):
     def lookup(self, antecedent: str, consequent: str) -> dict[str, Any] | None: ...
-
-    def consequents(self, antecedent: str) -> dict[str, dict[str, Any]]: ...
 
 
 @dataclass(frozen=True)
@@ -53,6 +63,7 @@ class InMemoryCouponClaimStore:
 class UserState:
     cart: dict[str, int] = field(default_factory=dict)
     active_views: dict[str, str] = field(default_factory=dict)
+    last_interested_product: str | None = None
 
 
 class CouponEngine:
@@ -116,20 +127,18 @@ class CouponEngine:
         if event_type == 'basket_opened':
             if not state.cart:
                 return None, 'empty_basket'
-            candidates = [
-                (-float(metrics['confidence']) * math.log1p(float(metrics['lift'])), target)
-                for cart_item in state.cart
-                for target, metrics in self.rules.consequents(cart_item).items()
-                if target not in state.cart and self._rule_rejection(metrics) is None
-            ]
-            if not candidates:
-                return None, 'no_qualifying_rule'
-            # Do not skip previously offered targets: reopening an unchanged
-            # basket must not walk down the list issuing additional coupons.
-            return self._issue_coupon(event, state, min(candidates)[1])
+            target = state.last_interested_product
+            # Upgrade existing durable sessions without losing their last view.
+            if target is None and state.active_views:
+                target = max(state.active_views, key=lambda item: datetime.fromisoformat(
+                    state.active_views[item].replace('Z', '+00:00')))
+            if target is None:
+                return None, 'no_interested_product'
+            return self._issue_coupon(event, state, target)
         product = event["product_id"]
 
         if event_type == 'recommendation_clicked':
+            state.last_interested_product = product
             return self._issue_coupon(event, state, product)
 
         if event_type == "cart_item_added":
@@ -146,6 +155,7 @@ class CouponEngine:
             return None, "cart_updated"
         if event_type == "product_view_started":
             state.active_views[product] = event["event_time"]
+            state.last_interested_product = product
             return None, "view_started"
         if event_type != "product_view_ended":
             return None, "ignored"

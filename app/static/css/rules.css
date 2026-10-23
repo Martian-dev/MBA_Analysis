@@ -1,0 +1,28 @@
+.rules-page { width: min(100% - 48px, var(--content)); margin: auto; padding-bottom: 96px; }
+.rules-intro { max-width: 850px; padding: 64px 0 36px; }
+.rules-intro h1 { margin: 0 0 20px; font: 700 clamp(36px, 5vw, 64px)/1.08 var(--display); letter-spacing: -.045em; }
+.rules-intro > p:not(.overline) { color: var(--muted); font-size: 18px; }
+.rules-intro > a { display: inline-flex; align-items: center; min-height: 44px; color: var(--leaf); font-weight: 800; }
+.rules-how { margin-bottom: 48px; border-left: 4px solid var(--leaf); padding: 20px 24px; background: var(--leaf-soft); }
+.rules-how strong { font: 600 20px var(--display); }.rules-how p { max-width: 95ch; margin: 8px 0 0; }
+.rules-heading { display: flex; justify-content: space-between; align-items: end; gap: 24px; margin-bottom: 20px; }
+.rules-heading h2 { margin: 0; font: 600 clamp(25px, 3vw, 36px)/1.2 var(--display); letter-spacing: -.035em; }
+.rules-heading > p, .rules-thresholds { color: var(--leaf-dark); font-size: 14px; }
+.rules-tools { display: grid; grid-template-columns: 2fr 1fr 1fr auto; align-items: end; gap: 16px; margin-bottom: 20px; }
+.rules-tools label { display: grid; gap: 6px; font-weight: 800; font-size: 14px; }
+.rules-tools input, .rules-tools select { min-width: 0; width: 100%; min-height: 48px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 6px; color: var(--ink); background: var(--white); font-size: 16px; }
+.rules-provenance { color: var(--muted); font-size: 14px; margin-bottom: 20px; overflow-wrap: anywhere; }
+.rules-results { min-height: 200px; }
+.rule-row { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(210px, .9fr) minmax(160px, .65fr); gap: 24px; align-items: center; padding: 24px 0; border-top: 1px solid var(--line); }
+.rule-pair { display: grid; grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr); align-items: center; gap: 16px; }
+.rule-pair a { display: flex; flex-direction: column; justify-content: center; min-height: 48px; text-decoration: none; font-weight: 800; line-height: 1.4; overflow-wrap: anywhere; }
+.rule-pair a:hover { color: var(--leaf); text-decoration: underline; }.rule-pair small { color: var(--muted); font-weight: 400; font-size: 12px; margin-bottom: 6px; }
+.rule-metrics { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 0; }
+.rule-metrics dt { color: var(--muted); font-size: 12px; }.rule-metrics dd { margin: 5px 0 0; font: 500 14px var(--mono); }
+.rule-status { margin: 0; color: var(--leaf-dark); font-size: 14px; }.rule-status small { display: block; margin-top: 5px; color: var(--muted); font-size: 12px; }
+.rules-pagination { display: flex; align-items: center; justify-content: center; gap: 24px; margin: 20px 0 64px; }.rules-pagination > span { font-size: 14px; }
+.rules-live { border-top: 3px solid var(--leaf); padding-top: 36px; scroll-margin-top: 120px; }.rules-live > p { max-width: 100ch; }
+.live-signal { display: grid; grid-template-columns: minmax(0, 1fr) repeat(3, minmax(120px, .4fr)); gap: 24px; align-items: center; padding: 20px 0; border-top: 1px solid var(--line); }
+.live-signal a { font-weight: 800; min-height: 44px; display: flex; align-items: center; }.live-signal span { font: 500 14px var(--mono); }.live-signal small { display: block; color: var(--muted); font: 400 12px var(--body); margin-top: 5px; }
+@media (max-width: 1000px) { .rule-row { grid-template-columns: 1fr 1fr; }.rule-pair { grid-column: 1 / -1; }.rules-tools { grid-template-columns: 1fr 1fr; }.live-signal { gap: 12px; grid-template-columns: minmax(0, 1fr) repeat(3, minmax(90px, .4fr)); } }
+@media (max-width: 600px) { .rules-page { width: calc(100% - 24px); }.rules-intro { padding-top: 36px; }.rules-heading { align-items: start; flex-direction: column; gap: 12px; }.rules-tools { grid-template-columns: 1fr; }.rules-tools > .button { width: 100%; }.rule-row { grid-template-columns: 1fr; gap: 18px; }.rule-pair { gap: 8px; }.rules-pagination { gap: 12px; }.rules-pagination .button { padding-inline: 12px; }.live-signal { grid-template-columns: repeat(3, 1fr); }.live-signal a { grid-column: 1 / -1; }.rules-how { padding: 16px; } }

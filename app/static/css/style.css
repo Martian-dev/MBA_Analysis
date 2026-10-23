@@ -40,6 +40,7 @@ svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width:
 .market-nav { display: flex; align-items: center; gap: 12px; }
 .market-nav__signal { min-height: 44px; display: flex; align-items: center; gap: 8px; padding: 10px; color: var(--leaf-dark); font-size: 13px; font-weight: 800; text-decoration: none; }
 .live-dot { width: 8px; height: 8px; border-radius: 50%; background: #2c9a63; box-shadow: 0 0 0 4px #ddefe3; }
+.market-nav__rules { display: inline-flex; align-items: center; min-height: 44px; padding: 10px; color: var(--leaf-dark); font-size: 13px; font-weight: 800; text-decoration: none; }.market-nav__rules:hover { text-decoration: underline; }
 .basket-button { min-height: 48px; display: flex; align-items: center; gap: 7px; padding: 7px 9px 7px 14px; border: 0; border-radius: 24px; background: var(--leaf); color: white; font-weight: 800; transition: background var(--ease); }
 .basket-button:hover { background: var(--leaf-dark); }
 .basket-button svg { width: 20px; }

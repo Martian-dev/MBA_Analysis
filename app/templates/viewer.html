@@ -11,7 +11,7 @@
   <a class="skip" href="#activity">Skip to activity</a>
   <header class="masthead">
     <a class="brand" href="/viewer"><span class="brand-mark" aria-hidden="true">B<span>·</span>S</span><span>Basket Signal <small>/ SIGNAL ROOM</small></span></a>
-    <div class="mast-right"><a class="store-link" href="/">Open storefront <span aria-hidden="true">↗</span></a><span class="connection" id="connection" role="status"><i aria-hidden="true"></i> Connecting</span></div>
+    <div class="mast-right"><a class="store-link" href="/rules">Browse supported rules</a><a class="store-link" href="/">Open storefront <span aria-hidden="true">↗</span></a><span class="connection" id="connection" role="status"><i aria-hidden="true"></i> Connecting</span></div>
   </header>
   <main class="shell">
     <section class="intro" aria-labelledby="page-title">
@@ -44,7 +44,7 @@
         <section class="panel guide" aria-labelledby="guide-title"><div class="panel-heading"><div><p class="eyebrow">03 / ELIGIBILITY</p><h2 id="guide-title">The rule of three</h2></div></div><ol class="rule-list"><li><span>01</span><div><strong>Someone has an item in their cart.</strong><p>The existing cart item is the rule antecedent for this shopper session.</p></div></li><li><span>02</span><div><strong>They hesitate on another product.</strong><p>A view must end after at least 45 seconds of event time.</p></div></li><li><span>03</span><div><strong>The association is strong enough.</strong><p>Lift ≥ 1.5, confidence ≥ 0.10, and support ≥ 0.012 are required before a mock 5% coupon is issued.</p></div></li></ol></section>
       </aside>
     </div>
-    <p class="footnote">Current rule source: original prototype CSV. Its flattened multi-item rules are provisional; Spark batch mining will replace this artifact. <a href="/">Return to storefront</a></p>
+    <p class="footnote">Association rules come from the active mined historical snapshot. Live traffic updates ranking signals, not rule support, confidence, or lift. <a href="/rules">Inspect rules and live signals</a>.</p>
   </main>
 </body>
 </html>

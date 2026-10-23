@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+<head>
+    <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Supported pairs & rules · Basket Signal</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/style.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/rules.css') }}">
+</head>
+<body>
+    {% include '_market_header.html' %}
+    <main id="main-content" class="rules-page">
+        <header class="rules-intro"><p class="overline">The evidence behind an offer</p><h1>Supported pairs & rules.</h1><p>Choose a basket item, then inspect its paired product. Only strong associations qualify for a coupon.</p><a href="#live-signals">See what live traffic changes ↓</a></header>
+        <aside class="rules-how" aria-label="Showcase instructions"><strong>To try a supported pair</strong><p>Add the left-hand item to your basket. Open the right-hand product directly and keep it visible for <span data-rule-dwell>45</span> seconds, without adding it to the basket. Then open the basket to apply the offer.</p><p>Recommendation clicks and basket opens also check eligibility for the product you showed interest in. They do not pick unseen items. Existing coupons, products already in the basket, and experiment holdouts can suppress another offer. Pair direction matters.</p></aside>
+        <section aria-labelledby="historical-title">
+            <div class="rules-heading"><div><p class="overline">Historical association rules</p><h2 id="historical-title">Find a pair to showcase</h2></div><p data-rule-summary role="status">Loading supported pairs…</p></div>
+            <p class="rules-thresholds" data-rule-thresholds></p>
+            <form class="rules-tools" data-rule-filters role="search">
+                <label>Product name<input type="search" name="q" placeholder="Try raspberries or avocado" maxlength="200"></label>
+                <label>Show<select name="eligible"><option value="true">Coupon-eligible pairs</option><option value="false">All historical rules</option></select></label>
+                <label>Sort by<select name="sort"><option value="lift">Highest lift</option><option value="confidence">Highest confidence</option><option value="support">Highest support</option></select></label>
+                <button class="button button--primary" type="submit">Find rules</button>
+            </form>
+            <div class="rules-provenance">Source: <strong>mined historical snapshot</strong> <span data-rule-version></span>. These metrics are not recalculated from synthetic clicks.</div>
+            <div class="rules-results" data-rule-results aria-busy="true"></div>
+            <nav class="rules-pagination" aria-label="Rule pages"><button type="button" class="button button--secondary" data-rules-previous disabled>Previous</button><span data-rule-page></span><button type="button" class="button button--secondary" data-rules-next disabled>Next</button></nav>
+        </section>
+        <section id="live-signals" class="rules-live" aria-labelledby="live-title">
+            <div class="rules-heading"><div><p class="overline">Live traffic · separate from mined rules</p><h2 id="live-title">What changes in real time?</h2></div><button class="button button--secondary" type="button" data-live-refresh>Refresh signals</button></div>
+            <p>The current pipeline updates product interest, pair-affinity features, and recommendation-ranking weights. It does <strong>not</strong> create new association rules or change their support, confidence, or lift. Live rule mining is not enabled.</p>
+            <p class="rules-provenance">These are aggregate ranking inputs from synthetic and storefront traffic, not new coupon rules or conversion rates. Positive feedback is weighted: a click contributes 0.5, a basket add 1, and an applied coupon 0.75. Legacy name-keyed traffic is shown separately; storefront ranking uses catalog IDs.</p>
+            <p data-live-summary role="status">Connecting to shared live state…</p>
+            <div data-live-results></div>
+        </section>
+    </main>
+    {% include '_cart_drawer.html' %}
+    <script src="{{ url_for('static', filename='js/marketplace.js') }}"></script>
+    <script src="{{ url_for('static', filename='js/rules.js') }}"></script>
+</body>
+</html>

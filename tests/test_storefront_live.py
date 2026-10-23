@@ -69,15 +69,16 @@ def test_owned_shopper_receives_and_redeems_live_coupon(tmp_path, trigger):
         antecedent = qualifying[0]['antecedents']
         rule = min((row for row in qualifying if row['antecedents'] == antecedent),
             key=lambda row: (-float(row['confidence']) * math.log1p(float(row['lift'])), row['consequents']))
-        event_count = '3' if trigger == 'product_view_ended' else '2'
+        event_count = '2' if trigger == 'recommendation_clicked' else '3'
         worker = subprocess.Popen([sys.executable, '-m', 'pipeline.consumer', '--group-id', 'audit-http-' + token, '--max-events', event_count],
             cwd=project, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         base = dict(user_id=user, session_id='s', event_time='2026-10-22T12:00:00Z')
         assert request('/api/events', {**base, 'event_id': uuid.uuid4().hex, 'event_type': 'cart_item_added',
             'product_id': rule['antecedents']}, csrf)[0] == 202
-        if trigger == 'product_view_ended':
+        if trigger in {'product_view_ended', 'basket_opened'}:
             assert request('/api/events', {**base, 'event_id': uuid.uuid4().hex, 'event_type': 'product_view_started',
                 'product_id': rule['consequents']}, csrf)[0] == 202
+        if trigger == 'product_view_ended':
             time.sleep(.15)
         action = dict(event_id=uuid.uuid4().hex, event_type=trigger)
         if trigger != 'basket_opened':

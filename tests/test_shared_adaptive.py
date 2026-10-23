@@ -103,6 +103,10 @@ class MemoryRedis:
         with self._mutex:
             return self.values.get(key)
 
+    def mget(self, keys):
+        with self._mutex:
+            return [self.values.get(key) for key in keys]
+
     def set(self, key, value, *, nx=False, ex=None):
         with self._mutex:
             if nx and key in self.values:

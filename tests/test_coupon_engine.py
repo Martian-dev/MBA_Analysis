@@ -169,13 +169,14 @@ def test_evaluate_exposes_suppression_reason():
     assert reason == "below_dwell_threshold"
 
 
-def test_opening_a_basket_issues_one_ranked_pairing_without_a_product_visit():
+def test_opening_a_basket_offers_the_interested_product_without_long_dwell():
     rules = FakeRules({
         ('avocado', 'tortillas'): {'support': .02, 'confidence': .3, 'lift': 2.1},
         ('avocado', 'salsa'): {'support': .02, 'confidence': .2, 'lift': 2.0},
     })
     engine = CouponEngine(rules)
     engine.process(event('cart_item_added', 'avocado'))
+    engine.process(event('product_view_started', 'tortillas'))
     decision, reason = engine.evaluate(event('basket_opened', None))
     assert reason == 'coupon_issued'
     assert decision['product_id'] == 'tortillas'
@@ -194,6 +195,7 @@ def test_basket_trigger_excludes_products_in_cart_and_uses_all_basket_items():
     }))
     engine.process(event('cart_item_added', 'avocado'))
     engine.process(event('cart_item_added', 'tortillas'))
+    engine.process(event('product_view_started', 'salsa'))
     decision = engine.process(event('basket_opened', None))
     assert decision['product_id'] == 'salsa'
     assert decision['supporting_cart_item'] == 'tortillas'
@@ -218,6 +220,7 @@ def test_recommendation_click_issues_without_a_view_and_deduplicates_across_trig
 def test_new_triggers_keep_rule_quality_guardrails(kind, metrics):
     engine = CouponEngine(FakeRules({('avocado', 'tortillas'): metrics}))
     engine.process(event('cart_item_added', 'avocado'))
+    engine.process(event('product_view_started', 'tortillas'))
     assert engine.process(event(kind, 'tortillas' if kind == 'recommendation_clicked' else None)) is None
 
 
@@ -228,6 +231,7 @@ def test_new_triggers_respect_holdout_empty_baskets_and_removed_evidence(kind):
     trigger = event(kind, 'tortillas' if kind == 'recommendation_clicked' else None)
     assert engine.process(trigger) is None
     engine.process(event('cart_item_added', 'avocado'))
+    engine.process(event('product_view_started', 'tortillas'))
     assert engine.evaluate(trigger)[1] == 'experiment_control'
     engine.process(event('cart_item_removed', 'avocado'))
     assert engine.process(trigger) is None
@@ -237,6 +241,27 @@ def test_impressions_and_cart_restore_do_not_issue_new_offers():
     engine = CouponEngine(FakeRules({('avocado', 'tortillas'): {'support': .02, 'confidence': .3, 'lift': 2.1}}))
     assert engine.process(event('cart_synchronized', None, cart=[{'product_id': 'avocado', 'quantity': 1}])) is None
     assert engine.process(event('recommendation_impression', 'tortillas')) is None
+
+
+def test_basket_open_never_substitutes_a_stronger_unseen_product():
+    engine = CouponEngine(FakeRules({
+        ('avocado', 'tortillas'): {'support': .02, 'confidence': .3, 'lift': 2.1},
+        ('avocado', 'salsa'): {'support': .03, 'confidence': .6, 'lift': 4},
+    }))
+    engine.process(event('cart_item_added', 'avocado'))
+    assert engine.evaluate(event('basket_opened', None)) == (None, 'no_interested_product')
+    engine.process(event('product_view_started', 'tortillas'))
+    assert engine.process(event('basket_opened', None))['product_id'] == 'tortillas'
+
+
+def test_weak_interested_product_does_not_redirect_offer_to_another_product():
+    engine = CouponEngine(FakeRules({
+        ('Large Lemon', 'Yellow Onions'): {'support': .0048, 'confidence': .1001, 'lift': 4.43},
+        ('Large Lemon', 'Banana'): {'support': .02, 'confidence': .3, 'lift': 2.1},
+    }))
+    engine.process(event('cart_item_added', 'Large Lemon'))
+    engine.process(event('product_view_started', 'Yellow Onions'))
+    assert engine.evaluate(event('basket_opened', None)) == (None, 'below_support_threshold')
 
 
 def test_simulator_randomizes_real_catalog_products_and_keeps_branches_meaningful():

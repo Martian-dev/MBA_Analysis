@@ -119,6 +119,7 @@ def test_cart_snapshot_rehydrates_a_new_session_without_duplicate_adds(client):
 def test_new_triggers_commit_one_recoverable_coupon_and_deduplicate_across_paths(client, trigger):
     trace = events()
     DurableCouponProcessor(client, Rules()).process(trace[0])
+    DurableCouponProcessor(client, Rules()).process(trace[2])
     action = {key: trace[0][key] for key in ('user_id', 'session_id', 'event_time')}
     action.update(event_id=uuid.uuid4().hex, event_type=trigger)
     if trigger == 'recommendation_clicked':
@@ -142,6 +143,7 @@ def test_basket_holdout_without_a_product_id_is_logged_without_issuing(client):
     trace = events()
     processor = DurableCouponProcessor(client, Rules(), holdout_fraction=1)
     processor.process(trace[0])
+    processor.process(trace[2])
     action = {key: trace[0][key] for key in ('user_id', 'session_id', 'event_time')}
     action.update(event_id=uuid.uuid4().hex, event_type='basket_opened')
     assert processor.process(action) == (None, 'experiment_control')

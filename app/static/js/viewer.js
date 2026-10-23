@@ -8,7 +8,7 @@ let couponListSignature = '';
 const text = value => String(value ?? '—');
 const time = value => value ? new Date(value).toISOString().slice(11, 19) : '—';
 const actionLabel = value => ({cart_item_added:'Cart add',cart_item_removed:'Cart remove',product_view_started:'View started',product_view_ended:'View ended',basket_opened:'Basket opened',recommendation_clicked:'Recommendation clicked'}[value] || value);
-const reasonLabel = value => ({cart_updated:'Cart updated',view_started:'Watching',below_dwell_threshold:'Short view',product_in_cart:'Already in cart',coupon_already_issued:'Already offered',below_confidence_threshold:'Confidence too low',below_support_threshold:'Support too low',no_qualifying_rule:'No rule match',coupon_issued:'Coupon issued'}[value] || value || 'Observed');
+const reasonLabel = value => ({cart_updated:'Cart updated',view_started:'Watching',below_dwell_threshold:'Short view',product_in_cart:'Already in cart',coupon_already_issued:'Already offered',below_confidence_threshold:'Confidence too low',below_support_threshold:'Support too low',no_qualifying_rule:'No rule match',no_interested_product:'No product interest yet',empty_basket:'Empty basket',coupon_issued:'Coupon issued'}[value] || value || 'Observed');
 
 function setConnection(state, label) {
   connection.className = `connection ${state}`;

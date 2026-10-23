@@ -97,6 +97,17 @@ class RedisFeatureStore:
     def _cart_key(self, user_id: str, session_id: str) -> str:
         return f"{self.namespace}:cart:{_digest(user_id, session_id)}"
 
+    def product_signals(self, product_ids: Sequence[str]) -> list[dict[str, Any]]:
+        """Read aggregate ranking inputs, never shopper/session records or scores."""
+        keys = [self._value_key(scope, product_id) for product_id in product_ids
+                for scope in (self._impressions, self._positive)]
+        values = self.client.mget(keys) if keys else []
+        return [
+            {'product_id': product_id, 'impressions': float(_text(values[index * 2]) or 0),
+             'positive_weight': float(_text(values[index * 2 + 1]) or 0)}
+            for index, product_id in enumerate(product_ids)
+        ]
+
     def _cart(self, user_id: str, session_id: str) -> set[str]:
         return {_text(value) or "" for value in self.client.smembers(self._cart_key(user_id, session_id))}
 

@@ -25,7 +25,9 @@ from redis.exceptions import RedisError
 
 from pipeline.contracts import validate_event
 from pipeline.adaptive import create_adaptive_service
-from pipeline.adaptive_redis import create_redis_adaptive_service
+from pipeline.adaptive_redis import create_redis_adaptive_service, RedisFeatureStore, RedisAdaptiveRankingService
+from pipeline.coupon_engine import configured_coupon_policy
+from app.rule_catalog import describe_rules
 from pipeline.observability import ActivityLog, CouponLedger
 from pipeline.serialization import JsonSerializer
 from pipeline.topics import EVENTS_TOPIC
@@ -443,6 +445,69 @@ def product_page(product_id: int):
     if product_id not in products_by_id:
         abort(404)
     return render_template("product.html", product_id=product_id)
+
+
+@app.get('/rules')
+def rules_page():
+    return render_template('rules.html')
+
+
+@app.get('/api/rules')
+def rules_catalog():
+    eligibility = request.args.get('eligible', 'true')
+    sort = request.args.get('sort', 'lift')
+    if eligibility not in {'true', 'false'} or sort not in {'lift', 'confidence', 'support'}:
+        return jsonify({'error': 'Invalid eligibility filter or sort'}), 400
+    try:
+        page = max(1, int(request.args.get('page', 1)))
+        per_page = min(50, max(1, int(request.args.get('per_page', 20))))
+    except ValueError:
+        return jsonify({'error': 'page and per_page must be integers'}), 400
+    policy = configured_coupon_policy()
+    all_rows = describe_rules(rules_df.to_dict('records'), _product_for, policy)
+    eligible_total = sum(row['coupon_eligible'] for row in all_rows)
+    query = request.args.get('q', '').strip().casefold()[:200]
+    rows = [row for row in all_rows if (eligibility == 'false' or row['coupon_eligible'])
+            and (not query or query in row['antecedent']['product_name'].casefold()
+                 or query in row['consequent']['product_name'].casefold())]
+    rows.sort(key=lambda row: (-row[sort], row['antecedent']['product_name'], row['consequent']['product_name']))
+    total = len(rows)
+    pages = max(1, (total + per_page - 1) // per_page)
+    page = min(page, pages)
+    return jsonify({'rules': rows[(page - 1) * per_page:page * per_page], 'total': total,
+        'historical_total': len(all_rows), 'eligible_total': eligible_total, 'policy': policy,
+        'snapshot_version': rules_snapshot_version, 'source': 'historical_snapshot',
+        'live_rule_mining_enabled': False,
+        'pagination': {'page': page, 'pages': pages, 'per_page': per_page}})
+
+
+@app.get('/api/rules/live')
+def live_rule_signals():
+    if not isinstance(adaptive_service, RedisAdaptiveRankingService):
+        return jsonify({'status': 'not_shared', 'products': [], 'live_rule_mining_enabled': False,
+                        'message': 'Shared live ranking is not configured in this server.'})
+    store = RedisFeatureStore(adaptive_service.redis_client, adaptive_service.namespace)
+    try:
+        # Legacy simulator traffic used names. Include those aggregate counters
+        # separately from the catalog-ID inputs actually used by storefront ranking.
+        identifiers = [str(product['product_id']) for product in catalog_products]
+        names = [product['product_name'] for product in catalog_products]
+        signals = store.product_signals(identifiers + names)
+        updates = int(adaptive_service.redis_client.get(f'{adaptive_service.namespace}:bandit:updates') or 0)
+    except RedisError:
+        return jsonify({'status': 'unavailable', 'products': [], 'live_rule_mining_enabled': False,
+                        'message': 'Live ranking data is unavailable. Historical rules remain readable.'}), 503
+    products = []
+    for index, product in enumerate(catalog_products):
+        current, legacy = signals[index], signals[index + len(catalog_products)]
+        if current['impressions'] or current['positive_weight'] or legacy['impressions'] or legacy['positive_weight']:
+            products.append({'product_id': product['product_id'], 'product_name': product['product_name'],
+                'impressions': current['impressions'], 'positive_weight': current['positive_weight'],
+                'legacy_positive_weight': legacy['positive_weight']})
+    products.sort(key=lambda row: (-row['positive_weight'], -row['legacy_positive_weight'], row['product_name']))
+    return jsonify({'status': 'live', 'products': products, 'feedback_updates': updates,
+        'live_rule_mining_enabled': False, 'as_of': datetime.now(timezone.utc).isoformat(),
+        'source': 'shared_redis_ranking_signals'})
 
 
 @app.get("/checkout")
