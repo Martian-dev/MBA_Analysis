@@ -30,16 +30,23 @@ const recommendation = {
     snapshot_version: 'snapshot-test',
 };
 
-const element = () => ({
-    hidden: false,
-    innerHTML: '',
-    textContent: '',
-    addEventListener() {},
-    querySelector() { return {addEventListener() {}}; },
-});
+const element = () => {
+    const children = new Map();
+    return {
+        hidden: false, html: '', htmlWrites: 0, textContent: '',
+        get innerHTML() { return this.html; },
+        set innerHTML(value) { this.html = value; this.htmlWrites += 1; children.clear(); },
+        addEventListener() {},
+        querySelector(selector) {
+            if (!children.has(selector)) children.set(selector, element());
+            return children.get(selector);
+        },
+    };
+};
+const offerText = page => page.elements['[data-next-pick]'].querySelector('[data-next-offer]').textContent;
 const nextTask = () => new Promise(resolve => setTimeout(resolve, 0));
 
-async function renderProductPage({cart: initialCart, recommendations = [], recommendationLoader = null, relatedProducts = [], offers = [], offersOffline = false}) {
+async function renderProductPage({cart: initialCart, recommendations = [], recommendationLoader = null, relatedProducts = [], offers = [], offersOffline = false, withObserver = false}) {
     let cart = initialCart;
     let onReady;
     let basketListener = () => {};
@@ -50,6 +57,14 @@ async function renderProductPage({cart: initialCart, recommendations = [], recom
     let now = 0;
     let timer;
     const documentHandlers = {};
+    const pageHandlers = {};
+    const observers = [];
+    const window = {BasketSignal: null};
+    if (withObserver) window.IntersectionObserver = class {
+        constructor(callback) { this.callback = callback; this.disconnected = false; observers.push(this); }
+        observe() {}
+        disconnect() { this.disconnected = true; }
+    };
     const elements = {
         '[data-product-stage]': element(),
         '[data-related-grid]': element(),
@@ -98,17 +113,18 @@ async function renderProductPage({cart: initialCart, recommendations = [], recom
         addEventListener(type, callback) { if (type === 'DOMContentLoaded') onReady = callback; else documentHandlers[type] = callback; },
         querySelector(selector) { return elements[selector] || element(); },
     };
+    window.BasketSignal = market;
     const context = vm.createContext({
         console,
         document,
-        window: {BasketSignal: market},
+        window,
         fetch: async url => {
             if (String(url).startsWith('/api/products/16')) {
                 return {ok: true, json: async () => ({product: currentProduct, related_products: relatedProducts})};
             }
             throw new Error(`Unexpected direct request: ${url}`);
         },
-        addEventListener() {},
+        addEventListener(type, callback) { pageHandlers[type] = callback; },
         navigator: {},
         performance: {now: () => now},
         URLSearchParams,
@@ -123,6 +139,9 @@ async function renderProductPage({cart: initialCart, recommendations = [], recom
         elements,
         requestedCarts,
         published,
+        observers,
+        intersect(index, ratio = 1) { observers[index].callback([{isIntersecting: ratio > 0, intersectionRatio: ratio}]); },
+        closePage() { pageHandlers.pagehide(); },
         async replaceOffers(nextOffers) { offers = nextOffers; offerListener(); await nextTask(); },
         async advanceTime(milliseconds) {
             now += milliseconds;
@@ -196,16 +215,20 @@ const nextPick = await renderProductPage({cart: [], relatedProducts: [currentPro
 assert.equal(nextPick.elements['[data-next-section]'].hidden, false);
 assert.match(nextPick.elements['[data-next-pick]'].innerHTML, /Magic Shell Caramel Flavored Topping/);
 assert.match(nextPick.elements['[data-next-pick]'].innerHTML, /Often paired with Mint Chocolate Flavored Syrup/);
-assert.match(nextPick.elements['[data-next-pick]'].innerHTML, /Explore for potential offers/);
-assert.doesNotMatch(nextPick.elements['[data-next-pick]'].innerHTML, /Offers available/);
+assert.match(offerText(nextPick), /Explore for potential offers/);
+assert.doesNotMatch(offerText(nextPick), /Offers available/);
 assert.doesNotMatch(nextPick.elements['[data-related-grid]'].innerHTML, /Magic Shell/);
 assert.match(nextPick.elements['[data-related-grid]'].innerHTML, /Alternative topping/);
 await nextPick.replaceOffers([{product_id: alternative.product_name, discount_percent: 5}]);
-assert.doesNotMatch(nextPick.elements['[data-next-pick]'].innerHTML, /Offers available/);
+assert.doesNotMatch(offerText(nextPick), /Offers available/);
+const cardWrites = nextPick.elements['[data-next-pick]'].htmlWrites;
+const gridWrites = nextPick.elements['[data-related-grid]'].htmlWrites;
 await nextPick.replaceOffers([{product_id: recommendation.product_name, discount_percent: 5}]);
-assert.match(nextPick.elements['[data-next-pick]'].innerHTML, /\* Offers available/);
+assert.match(offerText(nextPick), /\* Offers available/);
+assert.equal(nextPick.elements['[data-next-pick]'].htmlWrites, cardWrites, 'Offer changes must preserve focused product links');
+assert.equal(nextPick.elements['[data-related-grid]'].htmlWrites, gridWrites, 'Offer changes must preserve related product controls');
 await nextPick.replaceOffers([]);
-assert.doesNotMatch(nextPick.elements['[data-next-pick]'].innerHTML, /Offers available/);
+assert.doesNotMatch(offerText(nextPick), /Offers available/);
 assert.equal(nextPick.published.filter(event => event.payload.placement === 'product_next_pick').length, 1);
 await nextPick.replaceCart([recommendation]);
 assert.match(nextPick.elements['[data-next-pick]'].innerHTML, /Alternative topping/);
@@ -214,7 +237,22 @@ assert.equal(nextPick.elements['[data-next-section]'].hidden, true);
 assert.equal(nextPick.elements['[data-related-section]'].hidden, true);
 const offlinePick = await renderProductPage({cart: [], relatedProducts: [recommendation], offersOffline: true});
 assert.equal(offlinePick.elements['[data-next-section]'].hidden, false);
-assert.doesNotMatch(offlinePick.elements['[data-next-pick]'].innerHTML, /Offers available/);
+assert.doesNotMatch(offerText(offlinePick), /Offers available/);
 assert.equal(noValidResult.elements['[data-next-section]'].hidden, true);
+
+const scrolled = await renderProductPage({cart: [], relatedProducts: [recommendation, alternative], withObserver: true});
+const nextImpressions = () => scrolled.published.filter(event => event.payload.placement === 'product_next_pick').length;
+assert.equal(nextImpressions(), 0, 'Below-fold recommendations must wait until seen');
+scrolled.intersect(0, 0.1);
+assert.equal(nextImpressions(), 0);
+scrolled.intersect(0, 0.5);
+scrolled.intersect(0, 1);
+assert.equal(nextImpressions(), 1);
+await scrolled.replaceCart([recommendation]);
+scrolled.intersect(0, 1);
+assert.equal(nextImpressions(), 1, 'A stale observer must not record the previous product');
+scrolled.closePage();
+scrolled.intersect(1, 1);
+assert.equal(nextImpressions(), 1, 'A closed page must not record impressions');
 
 console.log('PASS: product page shows a ranked next pick, truthful live offers, and distinct basket recommendations');

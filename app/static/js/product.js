@@ -23,22 +23,35 @@ document.addEventListener('DOMContentLoaded', async () => {
     let offerRequestId = 0;
     let nextObserver = null;
     let pageClosed = false;
+    let nextPick = null;
+    let candidateKey = null;
     const seenNextPicks = new Set();
 
+    function updateOfferLabel() {
+        const label = nextCard.querySelector('[data-next-offer]');
+        if (!nextPick || !label) return;
+        const hasOffer = availableOffers.some(item => item.product_id === nextPick.product_name);
+        label.textContent = hasOffer ? '* Offers available' : '* Explore for potential offers';
+        label.className = `next-pick__offer${hasOffer ? ' next-pick__offer--available' : ''}`;
+    }
+
     function renderNextRecommendation() {
-        nextObserver?.disconnect();
         const cartIds = new Set(Market.getCart().map(item => Number(item.product_id)));
         const candidates = relatedProducts.filter(item => Number(item.product_id) !== productId && !cartIds.has(Number(item.product_id)));
+        const key = candidates.map(item => item.product_id).join(',');
+        if (candidateKey === key) { updateOfferLabel(); return; }
+        candidateKey = key;
+        nextObserver?.disconnect();
         const recommendation = candidates[0];
+        nextPick = recommendation;
         nextSection.hidden = !recommendation;
         nextCard.innerHTML = '';
         relatedSection.hidden = candidates.length < 2;
         relatedGrid.innerHTML = candidates.slice(1).map(item => Market.productCard(item, {source: 'product_related'})).join('');
         if (!recommendation) return;
-        const offer = availableOffers.find(item => item.product_id === recommendation.product_name);
-        const offerText = offer ? '* Offers available' : '* Explore for potential offers';
         const linkAttributes = `href="/product/${recommendation.product_id}" data-product-link data-source="product_next_pick" data-product-id="${recommendation.product_id}" data-product-name="${Market.escapeHtml(recommendation.product_name)}" data-impression-id="${Market.escapeHtml(recommendation.impression_id || '')}" data-policy-version="${Market.escapeHtml(recommendation.policy_version || '')}" data-snapshot-version="${Market.escapeHtml(recommendation.snapshot_version || '')}"`;
-        nextCard.innerHTML = `${Market.productArtwork(recommendation)}<div class="basket-result__copy"><p class="basket-result__because">${Market.escapeHtml(recommendation.recommendation_reason || 'Suggested from the catalog')}</p><a ${linkAttributes}><h3>${Market.escapeHtml(recommendation.product_name)}</h3></a><p>${Market.money(recommendation.price_inr)} · illustrative price</p><small class="next-pick__offer${offer ? ' next-pick__offer--available' : ''}">${offerText}</small></div><a class="button button--secondary" ${linkAttributes}>Explore this item${Market.icon('chevron')}</a>`;
+        nextCard.innerHTML = `${Market.productArtwork(recommendation)}<div class="basket-result__copy"><p class="basket-result__because">${Market.escapeHtml(recommendation.recommendation_reason || 'Suggested from the catalog')}</p><a ${linkAttributes}><h3>${Market.escapeHtml(recommendation.product_name)}</h3></a><p>${Market.money(recommendation.price_inr)} · illustrative price</p><small class="next-pick__offer" data-next-offer></small></div><a class="button button--secondary" ${linkAttributes}>Explore this item${Market.icon('chevron')}</a>`;
+        updateOfferLabel();
         const impressionKey = `${recommendation.impression_id || ''}:${recommendation.product_id}`;
         const recordImpression = () => {
             if (seenNextPicks.has(impressionKey) || pageClosed) return;
@@ -46,10 +59,12 @@ document.addEventListener('DOMContentLoaded', async () => {
             Market.publishRecommendationImpression(recommendation, 'product_next_pick').catch(() => {});
         };
         if ('IntersectionObserver' in window) {
-            nextObserver = new window.IntersectionObserver(entries => {
-                if (entries.some(entry => entry.isIntersecting)) { recordImpression(); nextObserver.disconnect(); }
+            const observer = new window.IntersectionObserver(entries => {
+                if (nextPick !== recommendation || pageClosed) return;
+                if (entries.some(entry => entry.isIntersecting && entry.intersectionRatio >= 0.5)) { recordImpression(); observer.disconnect(); }
             }, {threshold: 0.5});
-            nextObserver.observe(nextCard);
+            nextObserver = observer;
+            observer.observe(nextCard);
         } else recordImpression();
     }
 
@@ -63,7 +78,7 @@ document.addEventListener('DOMContentLoaded', async () => {
             if (requestId !== offerRequestId || pageClosed) return;
             availableOffers = [];
         }
-        renderNextRecommendation();
+        updateOfferLabel();
     }
 
     function quantityFor(id) { return Market.getCart().find(item => Number(item.product_id) === Number(id))?.quantity || 0; }
